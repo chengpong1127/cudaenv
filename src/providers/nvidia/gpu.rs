@@ -2,6 +2,10 @@ use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Result};
 
+use crate::model::device::{GpuDevice, GpuVendor};
+
+const PCI_VENDOR_ID: u32 = 0x10de;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Generation {
     MaxwellPascalVolta,
@@ -10,13 +14,23 @@ pub enum Generation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Gpu {
+pub struct NvidiaGpu {
     pub name: String,
     pub pci_device_id: Option<u16>,
     pub generation: Generation,
 }
 
-pub fn detect() -> Result<Vec<Gpu>> {
+impl From<NvidiaGpu> for GpuDevice {
+    fn from(gpu: NvidiaGpu) -> Self {
+        Self {
+            vendor: GpuVendor::Nvidia,
+            name: gpu.name,
+            pci_device_id: gpu.pci_device_id,
+        }
+    }
+}
+
+pub fn detect() -> Result<Vec<NvidiaGpu>> {
     let sysfs_devices = detect_sysfs()?;
     let pci_devices = detect_with_lspci()?;
     if !pci_devices.is_empty() {
@@ -25,7 +39,7 @@ pub fn detect() -> Result<Vec<Gpu>> {
     Ok(sysfs_devices)
 }
 
-fn detect_sysfs() -> Result<Vec<Gpu>> {
+fn detect_sysfs() -> Result<Vec<NvidiaGpu>> {
     let root = Path::new("/sys/bus/pci/devices");
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
@@ -35,7 +49,7 @@ fn detect_sysfs() -> Result<Vec<Gpu>> {
     let mut devices = Vec::new();
     for entry in entries {
         let path = entry?.path();
-        if read_hex(&path.join("vendor")) != Some(0x10de) {
+        if read_hex(&path.join("vendor")) != Some(PCI_VENDOR_ID) {
             continue;
         }
         let class = read_hex(&path.join("class")).unwrap_or(0);
@@ -47,7 +61,7 @@ fn detect_sysfs() -> Result<Vec<Gpu>> {
             || "NVIDIA GPU".to_owned(),
             |id| format!("NVIDIA GPU [10de:{id:04x}]"),
         );
-        devices.push(Gpu {
+        devices.push(NvidiaGpu {
             generation: classify_device_id(id),
             name,
             pci_device_id: id,
@@ -61,7 +75,7 @@ fn read_hex(path: &Path) -> Option<u32> {
     u32::from_str_radix(value.trim().trim_start_matches("0x"), 16).ok()
 }
 
-fn detect_with_lspci() -> Result<Vec<Gpu>> {
+fn detect_with_lspci() -> Result<Vec<NvidiaGpu>> {
     let output = match Command::new("lspci").args(["-Dnn"]).output() {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -76,7 +90,7 @@ fn detect_with_lspci() -> Result<Vec<Gpu>> {
         .collect())
 }
 
-fn parse_nvidia_lspci_line(line: &str) -> Option<Gpu> {
+fn parse_nvidia_lspci_line(line: &str) -> Option<NvidiaGpu> {
     let lowercase = line.to_ascii_lowercase();
     if !lowercase.contains("[10de:")
         || !(lowercase.contains("vga compatible controller")
@@ -98,7 +112,7 @@ fn parse_nvidia_lspci_line(line: &str) -> Option<Gpu> {
         .trim()
         .to_owned();
     let by_name = classify_name(&name);
-    Some(Gpu {
+    Some(NvidiaGpu {
         name,
         pci_device_id: id,
         generation: if by_name == Generation::Unknown {
@@ -111,7 +125,6 @@ fn parse_nvidia_lspci_line(line: &str) -> Option<Gpu> {
 
 fn classify_name(name: &str) -> Generation {
     let upper = name.to_ascii_uppercase();
-    // NVIDIA chip prefixes are more reliable than marketing names.
     if [" TU", " GA", " GH", " AD", " GB", " GN"]
         .iter()
         .any(|marker| upper.contains(marker))
@@ -160,8 +173,6 @@ fn classify_name(name: &str) -> Generation {
     }
 }
 
-// PCI IDs provide useful classification when pci.ids/lspci is unavailable. Only ranges that
-// unambiguously belong to the generations relevant to module selection are included.
 fn classify_device_id(id: Option<u16>) -> Generation {
     let Some(id) = id else {
         return Generation::Unknown;
@@ -195,7 +206,18 @@ mod tests {
     }
 
     #[test]
-    fn leaves_unrecognized_gpu_unknown() {
+    fn exposes_vendor_neutral_device() {
+        let device: GpuDevice = NvidiaGpu {
+            name: "GPU".into(),
+            pci_device_id: Some(1),
+            generation: Generation::Unknown,
+        }
+        .into();
+        assert_eq!(device.vendor, GpuVendor::Nvidia);
+    }
+
+    #[test]
+    fn leaves_unrecognized_gpu_generation_unknown() {
         let gpu = parse_nvidia_lspci_line(
             "0000:01:00.0 VGA compatible controller: NVIDIA Corporation Device [10de:0001]",
         )

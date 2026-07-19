@@ -1,6 +1,4 @@
-use std::{ffi::OsStr, process::Command};
-
-use anyhow::{Context, Result, bail};
+use std::ffi::OsStr;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -46,26 +44,32 @@ impl CommandSpec {
             .collect::<Vec<_>>()
             .join(" ")
     }
-
-    pub fn execute(&self) -> Result<()> {
-        let status = Command::new(&self.program)
-            .args(&self.args)
-            .status()
-            .with_context(|| format!("could not start {}", self.program))?;
-        if !status.success() {
-            bail!("command failed (exit status {status}): {}", self.display());
-        }
-        Ok(())
-    }
 }
 
 fn quote(value: &str) -> String {
     if value
         .bytes()
-        .all(|c| c.is_ascii_alphanumeric() || b"-_=+./:*".contains(&c))
+        .all(|c| c.is_ascii_alphanumeric() || b"-_=+./:".contains(&c))
     {
         value.to_owned()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safely_quotes_display_arguments() {
+        let command = CommandSpec::new("tool", ["plain", "two words", "it's"]);
+        assert_eq!(command.display(), "tool plain 'two words' 'it'\\''s'");
+    }
+
+    #[test]
+    fn quotes_package_wildcards_for_safe_copying() {
+        let command = CommandSpec::sudo("apt", ["remove", "cuda-toolkit*"]);
+        assert_eq!(command.display(), "sudo apt remove 'cuda-toolkit*'");
     }
 }

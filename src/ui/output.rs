@@ -1,115 +1,81 @@
-use crate::system::{
-    command::CommandSpec, environment::InstallationStatus, gpu::Gpu, os::OsInfo,
-    repository::Repository,
+use crate::model::{
+    environment::{Diagnostics, ProviderStatus},
+    operation::OperationPlan,
+    system::OsInfo,
 };
 
-fn print_commands(commands: &[String]) {
-    for command in commands {
-        println!("  $ {command}");
+pub fn operation_plan(plan: &OperationPlan) {
+    println!("{}\n", plan.title);
+    for detail in &plan.details {
+        println!("{}: {}", detail.label, detail.value);
     }
-}
-
-pub struct InstallationPlan<'a> {
-    pub os: &'a OsInfo,
-    pub gpus: &'a [Gpu],
-    pub profile: &'a str,
-    pub driver_package: &'a str,
-    pub repository: &'a Repository,
-    pub repository_configured: bool,
-    pub toolkit_package: Option<&'a str>,
-    pub current: &'a InstallationStatus,
-    pub install_driver: bool,
-    pub install_toolkit: bool,
-    pub repository_setup_commands: &'a [CommandSpec],
-    pub commands: &'a [CommandSpec],
-}
-
-pub fn installation_plan(plan: &InstallationPlan<'_>) {
-    println!("Installation Plan\n");
-    println!("OS: {}", plan.os.display_name());
-    println!("Package manager: {:?}", plan.os.package_manager());
-    println!("Repository: {}", plan.repository.base_url);
-    println!("Profile: {}", plan.profile);
-    println!(
-        "Driver: {}",
-        if plan.install_driver {
-            format!("install {}", plan.driver_package)
-        } else {
-            format!(
-                "already installed ({}) — skipped",
-                plan.current.driver_version.as_deref().unwrap_or("unknown")
-            )
+    if !plan.devices.is_empty() {
+        println!("GPU(s):");
+        for device in &plan.devices {
+            println!("  - {} ({})", device.name, device.vendor);
         }
-    );
-    println!(
-        "Current CUDA Toolkit: {}",
-        plan.current
-            .toolkit_version
-            .as_deref()
-            .unwrap_or("not installed")
-    );
-    println!(
-        "CUDA Toolkit: {}",
-        match (plan.toolkit_package, plan.install_toolkit) {
-            (Some(package), true) => format!("install {package}"),
-            (Some(_), false) => "requested version already installed — skipped".to_owned(),
-            (None, _) => "not requested".to_owned(),
-        }
-    );
-    println!("GPU(s):");
-    for gpu in plan.gpus {
-        println!("  - {} ({:?})", gpu.name, gpu.generation);
     }
     println!("\nCommands:");
-    if (plan.install_driver || plan.install_toolkit) && plan.repository_configured {
-        println!("  # NVIDIA CUDA repository is already configured");
+    if plan.steps.is_empty() {
+        println!("  # no changes required");
+    } else {
+        for step in &plan.steps {
+            println!("  $ {}", step.command.display());
+        }
     }
-    for command in plan.repository_setup_commands {
-        println!("  $ {}", command.display());
-    }
-    for command in plan.commands {
-        println!("  $ {}", command.display());
-    }
-    println!("No system changes will be made until you confirm.");
+    println!("{}", plan.confirmation_warning);
 }
 
-pub fn system_status(os: &OsInfo, gpu: Option<&str>, driver: Option<&str>, toolkit: Option<&str>) {
-    println!("GPU Environment");
-    println!("\nOS:\n{}", os.display_name());
-    println!("\nGPU:\n{}", gpu.unwrap_or("Not detected"));
-    println!("\nDriver:\n{}", driver.unwrap_or("Not installed"));
-    println!("\nCUDA Toolkit:\n{}", toolkit.unwrap_or("Not installed"));
+pub fn operation_completed(plan: &OperationPlan) {
+    println!("\n{}", plan.completion_message);
+    if let Some(message) = &plan.reboot_message {
+        println!("{message}");
+    }
 }
 
-pub fn diagnostics(gpu_detected: bool, driver_installed: bool, nvidia_smi: bool) {
-    let healthy = gpu_detected && driver_installed && nvidia_smi;
-    println!("NVIDIA Diagnostics\n");
-    println!("{} NVIDIA GPU detected", mark(gpu_detected));
-    println!("{} NVIDIA driver installed", mark(driver_installed));
-    println!("{} nvidia-smi available", mark(nvidia_smi));
+pub fn system_status(os: &OsInfo, providers: &[ProviderStatus]) {
+    println!("GPU Environment\n");
+    println!("OS:\n{}", os.display_name());
+    for status in providers {
+        println!("\n{} GPU(s):", status.vendor);
+        if status.devices.is_empty() {
+            println!("Not detected");
+        } else {
+            for device in &status.devices {
+                println!("{}", device.name);
+            }
+        }
+        println!(
+            "\n{} Driver:\n{}",
+            status.vendor,
+            status.driver_version.as_deref().unwrap_or("Not installed")
+        );
+        for toolkit in &status.toolkits {
+            println!("\n{}:\n{}", toolkit.name, toolkit.version);
+        }
+        if status.toolkits.is_empty() {
+            println!("\nDevelopment Toolkit:\nNot installed");
+        }
+    }
+}
 
-    if healthy {
+pub fn diagnostics(diagnostics: &Diagnostics) {
+    println!("{} Diagnostics\n", diagnostics.vendor);
+    for check in &diagnostics.checks {
+        println!("{} {}", mark(check.passed), check.name);
+    }
+    if diagnostics.healthy() {
         println!("\nHealthy");
         return;
     }
-
     println!("\nProblems found");
-    if !gpu_detected {
-        println!("- No NVIDIA GPU was detected by lspci or nvidia-smi.");
+    for problem in diagnostics.checks.iter().filter_map(|check| {
+        (!check.passed)
+            .then_some(check.problem.as_deref())
+            .flatten()
+    }) {
+        println!("- {problem}");
     }
-    if !driver_installed {
-        println!("- The NVIDIA driver does not appear to be installed or loaded.");
-    }
-    if !nvidia_smi {
-        println!("- nvidia-smi is not available in PATH.");
-    }
-}
-
-pub fn uninstall_plan(commands: &[String]) {
-    println!("Uninstall Plan\n");
-    println!("The following detected CUDA/NVIDIA packages will be removed:");
-    print_commands(commands);
-    println!("\nThis operation changes system packages and cannot be automatically undone.");
 }
 
 fn mark(ok: bool) -> &'static str {

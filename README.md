@@ -1,7 +1,8 @@
 # cudaenv
 
-`cudaenv` inspects NVIDIA GPU environments and installs NVIDIA drivers from
-official NVIDIA repositories. Driver installation supports Ubuntu, Debian,
+`cudaenv` is a GPU environment manager with a provider-oriented architecture.
+The current NVIDIA provider inspects NVIDIA GPU environments and installs
+drivers from official NVIDIA repositories. Driver installation supports Ubuntu, Debian,
 RHEL, AlmaLinux, Rocky Linux, Oracle Linux, Fedora, Amazon Linux, Azure Linux,
 openSUSE, SLES, and KylinOS. WSL is intentionally rejected because its NVIDIA
 driver must be installed on the Windows host.
@@ -57,3 +58,28 @@ cargo run -- uninstall --yes
 version. Install and uninstall plans use that status: already-installed
 components are skipped, and uninstall only removes components detected as
 present.
+
+## Architecture
+
+The crate separates shared workflows from vendor integrations:
+
+```text
+src/
+├── commands/       CLI workflows and confirmation
+├── model/          vendor-neutral devices, status, diagnostics, and plans
+├── platform/       operating-system, process, and package-manager adapters
+├── providers/
+│   └── nvidia/     NVIDIA detection, driver policy, repositories, and CUDA
+└── ui/             terminal rendering and prompts
+```
+
+Inspection commands use the `AcceleratorProvider` contract. Adding an AMD or
+Intel integration starts with a sibling module under `providers/` that returns
+the shared `GpuDevice`, `ProviderStatus`, and `Diagnostics` models, followed by
+registration in `providers::registered`. Vendor-specific installation options
+remain inside the provider because CUDA, ROCm, and oneAPI do not have identical
+driver or toolkit semantics.
+
+Installation and removal are represented as typed `OperationPlan` values. The
+terminal prints the same `CommandSpec` values that the command runner executes,
+so previews cannot silently diverge from the requested system changes.

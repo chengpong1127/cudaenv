@@ -1,19 +1,7 @@
-mod cli;
-mod commands;
-mod system;
-mod ui;
-
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Command};
+use cudaenv::cli::Cli;
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    match cli.command {
-        Command::Install(args) => commands::install::run(args),
-        Command::Status => commands::status::run(),
-        Command::Doctor => commands::doctor::run(),
-        Command::Uninstall(args) => commands::uninstall::run(args),
-    }
+    cudaenv::run(Cli::parse())
 }

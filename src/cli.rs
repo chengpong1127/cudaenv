@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-/// An NVIDIA GPU environment manager for Linux.
+/// A GPU environment manager for Linux.
 #[derive(Debug, Parser)]
 #[command(name = "cudaenv", version, about)]
 pub struct Cli {
@@ -14,7 +14,7 @@ pub enum Command {
     Install(InstallArgs),
     /// Display the current GPU environment.
     Status,
-    /// Diagnose common NVIDIA driver problems.
+    /// Diagnose common GPU driver problems.
     Doctor,
     /// Plan and remove CUDA Toolkit and NVIDIA driver packages on Ubuntu.
     Uninstall(UninstallArgs),

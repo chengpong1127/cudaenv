@@ -3,74 +3,7 @@ use std::fs;
 use anyhow::{Result, bail};
 use os_info::Type;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Distribution {
-    Ubuntu,
-    Debian,
-    Rhel,
-    AlmaLinux,
-    RockyLinux,
-    OracleLinux,
-    Fedora,
-    AmazonLinux,
-    AzureLinux,
-    OpenSuse,
-    Sles,
-    KylinOs,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PackageManager {
-    AptGet,
-    Dnf,
-    Tdnf,
-    Zypper,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct OsInfo {
-    pub distribution: Distribution,
-    pub name: String,
-    pub version_id: String,
-    pub architecture: String,
-    pub is_wsl: bool,
-}
-
-impl OsInfo {
-    /// Compatibility helper for commands that still intentionally support Ubuntu only.
-    pub fn is_supported(&self) -> bool {
-        self.distribution == Distribution::Ubuntu
-    }
-
-    pub fn package_manager(&self) -> PackageManager {
-        match self.distribution {
-            Distribution::Ubuntu | Distribution::Debian | Distribution::KylinOs => {
-                PackageManager::AptGet
-            }
-            Distribution::Rhel
-            | Distribution::AlmaLinux
-            | Distribution::RockyLinux
-            | Distribution::OracleLinux
-            | Distribution::Fedora
-            | Distribution::AmazonLinux => PackageManager::Dnf,
-            Distribution::AzureLinux => PackageManager::Tdnf,
-            Distribution::OpenSuse | Distribution::Sles => PackageManager::Zypper,
-        }
-    }
-
-    pub fn display_name(&self) -> String {
-        format!("{} {}", self.name, self.version_id)
-    }
-
-    pub fn ensure_driver_installable(&self) -> Result<()> {
-        if self.is_wsl {
-            bail!(
-                "NVIDIA driver installation is not supported inside WSL. Install the NVIDIA driver on the Windows host; WSL uses the host driver."
-            );
-        }
-        Ok(())
-    }
-}
+use crate::model::system::{Distribution, OsInfo};
 
 pub fn detect() -> Result<OsInfo> {
     let info = os_info::get();
@@ -107,15 +40,13 @@ fn map_distribution(os_type: Type, release_id: Option<&str>) -> Result<Distribut
         Type::Mariner => Distribution::AzureLinux,
         Type::openSUSE => Distribution::OpenSuse,
         Type::SUSE => Distribution::Sles,
-        // os_info 3.15 has no KylinOS variant. ID is the only missing field we parse.
         Type::Linux | Type::Unknown if matches!(release_id, Some("kylin" | "kylinos")) => {
             Distribution::KylinOs
         }
-        // os_info recognizes the former CBL-Mariner ID but not Azure Linux's newer ID.
         Type::Linux | Type::Unknown if matches!(release_id, Some("azurelinux" | "azl")) => {
             Distribution::AzureLinux
         }
-        _ => bail!("NVIDIA CUDA repositories are not supported on {os_type}"),
+        _ => bail!("GPU package installation is not supported on {os_type}"),
     };
     Ok(distribution)
 }
@@ -157,6 +88,7 @@ fn detect_wsl() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::system::PackageManager;
 
     #[test]
     fn maps_os_info_results() {
@@ -189,19 +121,18 @@ mod tests {
             (Distribution::AzureLinux, PackageManager::Tdnf),
             (Distribution::Sles, PackageManager::Zypper),
         ] {
-            let os = sample(distribution, false);
-            assert_eq!(os.package_manager(), expected);
+            assert_eq!(sample(distribution, false).package_manager(), expected);
         }
     }
 
     #[test]
-    fn rejects_wsl_with_host_explanation() {
+    fn rejects_wsl_with_vendor_neutral_host_explanation() {
         let error = sample(Distribution::Ubuntu, true)
-            .ensure_driver_installable()
+            .ensure_driver_installable("NVIDIA")
             .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("Windows host"));
-        assert!(message.contains("WSL"));
+        assert!(message.contains("NVIDIA"));
     }
 
     fn sample(distribution: Distribution, is_wsl: bool) -> OsInfo {
