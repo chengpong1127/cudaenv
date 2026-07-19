@@ -15,7 +15,7 @@ pub fn select_usage_profile() -> Result<UsageProfile> {
     let profiles = [UsageProfile::ModelTraining, UsageProfile::CudaDevelopment];
     let options = profiles.map(UsageProfile::label);
     let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("What do you want to install?")
+        .with_prompt("What will you use CUDA for?")
         .items(&options)
         .default(0)
         .interact()

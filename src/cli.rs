@@ -22,17 +22,21 @@ pub enum Command {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum UsageProfile {
-    /// Install only the NVIDIA driver.
+    /// Set up model training with frameworks such as PyTorch, TensorFlow, or JAX.
     ModelTraining,
-    /// Install the NVIDIA driver and CUDA Toolkit.
+    /// Set up native CUDA development.
     CudaDevelopment,
 }
 
 impl UsageProfile {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ModelTraining => "NVIDIA driver only (frameworks and containers)",
-            Self::CudaDevelopment => "NVIDIA driver + CUDA Toolkit (nvcc and native development)",
+            Self::ModelTraining => {
+                "Train machine learning models with PyTorch, TensorFlow, or JAX"
+            }
+            Self::CudaDevelopment => {
+                "Develop CUDA applications or custom GPU kernels (only if you write CUDA code directly)"
+            }
         }
     }
 }

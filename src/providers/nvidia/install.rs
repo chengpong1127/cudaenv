@@ -24,8 +24,8 @@ pub enum InstallProfile {
 impl InstallProfile {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ModelTraining => "NVIDIA driver only",
-            Self::CudaDevelopment => "NVIDIA driver + CUDA Toolkit",
+            Self::ModelTraining => "Model training (PyTorch, TensorFlow, JAX)",
+            Self::CudaDevelopment => "CUDA development",
         }
     }
 }

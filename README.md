@@ -1,104 +1,139 @@
 # cudaenv
 
-`cudaenv` is a GPU environment manager with a provider-oriented architecture.
-The current NVIDIA provider inspects NVIDIA GPU environments and installs
-drivers from official NVIDIA repositories. Driver installation supports Ubuntu, Debian,
-RHEL, AlmaLinux, Rocky Linux, Oracle Linux, Fedora, Amazon Linux, Azure Linux,
-openSUSE, SLES, and KylinOS. WSL is intentionally rejected because its NVIDIA
-driver must be installed on the Windows host.
+`cudaenv` makes it easier to set up an NVIDIA GPU environment on Linux. It
+detects your GPU and operating system, chooses the appropriate NVIDIA packages,
+shows every planned change, and asks for confirmation before installation.
 
-Repository targets are resolved from the exact distribution, release, and CPU
-architecture. If NVIDIA does not publish that exact target, `cudaenv` stops
-instead of borrowing another distribution's repository.
-
-## Install
+## Install cudaenv
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/chengpong1127/cudaenv/main/install.sh | sh
 ```
 
-The installer puts `cudaenv` in `~/.local/bin` and then asks whether to install
-your CUDA environment. The guided setup lets you choose the NVIDIA driver only
-or the driver plus CUDA Toolkit, shows the complete plan, and asks for
-confirmation before changing the system.
+The installer downloads a verified release and places `cudaenv` in
+`~/.local/bin`. If that directory is not already in your `PATH`, follow the
+instruction printed by the installer.
 
-To install the binary without starting CUDA setup, answer `n` at the prompt and
-run `cudaenv install` later. Set `CUDAENV_INSTALL_DIR` to use a different binary
-directory.
+After installing the command, the script asks whether you want to configure
+your GPU environment immediately. You can answer `n` and run `cudaenv install`
+later.
 
-## Build and test
-
-```bash
-cargo build
-cargo test
-```
-
-## Guided installation
+## Set up your GPU environment
 
 ```bash
-cargo run -- install
-cargo run -- install --profile model-training
-cargo run -- install --profile cuda-development
-cargo run -- install --toolkit 13.1
-cargo run -- install --profile cuda-development --dry-run
+cudaenv install
 ```
 
-With no `--profile`, `install` asks directly whether to install the NVIDIA
-driver only or the driver plus NVIDIA's latest stable CUDA Toolkit. The existing
-profile flag names remain available for scripts.
-
-Driver flavor selection is automatic for recognized GPUs. If the GPU generation
-cannot be identified safely, cudaenv stops and asks for an explicit
-`--driver open` or `--driver proprietary` choice.
-
-Every install prints the full repository and package command plan first. It asks
-for confirmation unless `--yes` is supplied; `--dry-run` never changes the
-system. For CUDA development, the unversioned `cuda-toolkit` meta-package tracks
-the latest stable toolkit in NVIDIA's repository. An optional pin such as
-`--toolkit 13.1` selects `cuda-toolkit-13-1` and implies the CUDA development
-profile. The network repository is configured only when needed, package
-availability is checked before installation, and `nvcc --version` verifies the
-result.
-
-Other inspection commands remain available:
-
-```bash
-cargo run -- status
-cargo run -- doctor
-cargo run -- uninstall
-cargo run -- uninstall --yes
-```
-
-`status` reports driver package installation separately from the loaded driver
-runtime, as well as the active CUDA Toolkit version. Install plans query the
-system package database so already-installed components are skipped. On Ubuntu,
-uninstall resolves and displays the exact installed meta-packages it will remove;
-it retains dependencies instead of running a broad automatic cleanup.
-
-Release downloads are verified against SHA-256 checksum files published with
-each release.
-
-## Architecture
-
-The crate separates shared workflows from vendor integrations:
+The guided setup asks what you want to use the machine for:
 
 ```text
-src/
-├── commands/       CLI workflows and confirmation
-├── model/          vendor-neutral devices, status, diagnostics, and plans
-├── platform/       operating-system, process, and package-manager adapters
-├── providers/
-│   └── nvidia/     NVIDIA detection, driver policy, repositories, and CUDA
-└── ui/             terminal rendering and prompts
+Model training (PyTorch, TensorFlow, JAX)
+CUDA development
 ```
 
-Inspection commands use the `AcceleratorProvider` contract. Adding an AMD or
-Intel integration starts with a sibling module under `providers/` that returns
-the shared `GpuDevice`, `ProviderStatus`, and `Diagnostics` models, followed by
-registration in `providers::registered`. Vendor-specific installation options
-remain inside the provider because CUDA, ROCm, and oneAPI do not have identical
-driver or toolkit semantics.
+Model training configures the system for frameworks that provide their own CUDA
+runtime. CUDA development also installs the tools needed to compile CUDA code.
 
-Installation and removal are represented as typed `OperationPlan` values. The
-terminal prints the same `CommandSpec` values that the command runner executes,
-so previews cannot silently diverge from the requested system changes.
+Before changing the system, `cudaenv` displays the detected GPU, operating
+system, repository, packages, and commands it plans to use. Nothing is installed
+until you confirm.
+
+Useful installation options:
+
+```bash
+# Preview the installation without changing the system
+cudaenv install --dry-run
+
+# Select model training without showing the usage prompt
+cudaenv install --profile model-training
+
+# Select CUDA development without showing the usage prompt
+cudaenv install --profile cuda-development
+
+# Install a specific CUDA version
+cudaenv install --toolkit 13.1
+
+# Skip the final confirmation for an unattended installation
+cudaenv install --profile model-training --yes
+```
+
+Driver selection is automatic for recognized GPUs. If the GPU generation cannot
+be identified safely, `cudaenv` asks you to check the GPU and rerun with an
+explicit choice:
+
+```bash
+cudaenv install --driver open
+cudaenv install --driver proprietary
+```
+
+## Check the current environment
+
+```bash
+cudaenv status
+```
+
+`cudaenv status` reports:
+
+- Detected NVIDIA GPUs
+- Whether an NVIDIA driver package is installed
+- Whether the driver is loaded and operational
+- The installed CUDA development tools version, when available
+
+Already-installed components are skipped when you run `cudaenv install` again.
+
+## Diagnose problems
+
+```bash
+cudaenv doctor
+```
+
+The doctor checks GPU detection, driver installation, driver runtime health,
+`nvidia-smi`, kernel headers, and Secure Boot compatibility. If it finds a
+problem, it prints the likely cause and suggested next action.
+
+## Uninstall
+
+```bash
+cudaenv uninstall
+```
+
+Uninstall is currently supported on Ubuntu. It displays the exact CUDA and
+NVIDIA meta-packages it found and asks for confirmation before removing them.
+Dependencies are retained to avoid unexpectedly removing unrelated software.
+
+To skip the final confirmation:
+
+```bash
+cudaenv uninstall --yes
+```
+
+## Supported systems
+
+`cudaenv` supports NVIDIA's official repositories for these Linux families:
+
+- Ubuntu 22.04, 24.04, and 26.04
+- Debian 12 and 13
+- RHEL, AlmaLinux, and Rocky Linux 8–10
+- Oracle Linux 8 and 9
+- Fedora 44
+- Amazon Linux 2023
+- Azure Linux 3
+- openSUSE Leap 15 and 16
+- SUSE Linux Enterprise Server 15 and 16
+- KylinOS V11
+
+Support depends on NVIDIA publishing a repository for the exact operating
+system, release, and CPU architecture. `cudaenv` stops instead of substituting a
+repository from another distribution.
+
+WSL is detected but driver installation inside WSL is intentionally blocked.
+Install the NVIDIA driver on the Windows host; WSL uses the host driver.
+
+## Safety
+
+- Installation and removal plans are displayed before confirmation.
+- `--dry-run` never changes the system.
+- Commands are executed directly without shell interpolation.
+- Repository and release downloads require HTTPS.
+- Release archives are verified using published SHA-256 checksums.
+- Unsupported systems and ambiguous GPU generations fail safely.
