@@ -336,7 +336,7 @@ pub fn transition_commands(
     }
 }
 
-fn modular_dnf(os: &OsInfo) -> bool {
+pub(crate) fn is_modular_dnf(os: &OsInfo) -> bool {
     matches!(
         os.distribution,
         Distribution::Rhel
@@ -348,6 +348,10 @@ fn modular_dnf(os: &OsInfo) -> bool {
             os.distribution,
             Distribution::AmazonLinux | Distribution::KylinOs
         )
+}
+
+fn modular_dnf(os: &OsInfo) -> bool {
+    is_modular_dnf(os)
 }
 
 fn major(os: &OsInfo) -> Option<u32> {

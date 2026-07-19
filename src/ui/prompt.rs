@@ -30,3 +30,11 @@ pub fn confirm_uninstall() -> Result<bool> {
         .interact()
         .context("could not read uninstall confirmation")
 }
+
+pub fn confirm_upgrade() -> Result<bool> {
+    Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Continue with this upgrade plan?")
+        .default(false)
+        .interact()
+        .context("could not read upgrade confirmation")
+}

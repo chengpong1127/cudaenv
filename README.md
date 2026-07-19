@@ -98,6 +98,47 @@ cudaenv status
 
 Already-installed components are skipped when you run `cudaenv install` again.
 
+When repository metadata can be queried reliably, status also reports a newer
+compatible driver or Toolkit version. If metadata is unavailable, it reports
+only installed state and does not claim the system is current.
+
+## Upgrade installed components
+
+```bash
+# Upgrade every supported component that is already installed
+cudaenv upgrade
+
+# Select either component, or provide both flags together
+cudaenv upgrade --driver
+cudaenv upgrade --toolkit
+cudaenv upgrade --driver --toolkit
+
+# Preview the exact plan, or skip confirmation
+cudaenv upgrade --dry-run
+cudaenv upgrade --yes
+```
+
+“Latest compatible” means the newest candidate published by the configured
+NVIDIA repository that satisfies the detected GPU generation, operating system,
+architecture, installed driver flavor and branch restrictions, Toolkit tracking
+boundary, and driver/Toolkit compatibility policy. It does not mean the package
+with the highest version number regardless of those constraints.
+
+Upgrade changes only components already present. A machine without a system
+CUDA Toolkit will not gain one, and selecting only absent components is a
+successful no-op. Driver upgrades preserve the installed open or proprietary
+kernel-module flavor; changing flavor is an explicit install/migration operation.
+Maxwell, Pascal, and Volta remain on proprietary R580 and CUDA 12.x. Unknown GPU
+generations and incompatible mixed-generation systems fail safely.
+
+Exact-version Toolkit installations move to the newest compatible exact Toolkit
+package side by side. Older Toolkit packages and directories are retained.
+`/usr/local/cuda` is updated only when it is a symlink clearly pointing at the
+Toolkit being upgraded; a user-managed file or directory is never overwritten.
+Unmanaged and NVIDIA runfile driver installations are refused until migrated to
+a supported package-manager installation. A driver upgrade requires a reboot;
+the loaded driver may continue reporting its pre-upgrade version until then.
+
 ## Diagnose problems
 
 ```bash

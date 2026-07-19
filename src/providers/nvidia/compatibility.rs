@@ -137,7 +137,7 @@ pub fn evaluate(driver: &str, toolkit: &str) -> Option<Compatibility> {
     }
 }
 
-fn major_minor(version: &str) -> Option<String> {
+pub fn major_minor(version: &str) -> Option<String> {
     let mut parts = version.split(['.', '-']);
     Some(format!(
         "{}.{}",
@@ -146,7 +146,7 @@ fn major_minor(version: &str) -> Option<String> {
     ))
 }
 
-fn compare_versions(left: &str, right: &str) -> Ordering {
+pub fn compare_versions(left: &str, right: &str) -> Ordering {
     let parse = |version: &str| {
         version
             .split(['.', '-'])

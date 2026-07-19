@@ -65,11 +65,18 @@ pub fn classify_driver(
             || p.starts_with("kmod-nvidia-open")
             || p.starts_with("nvidia-open-driver")
     });
-    let proprietary = packages.iter().any(|p| {
+    let proprietary_marker = packages.iter().any(|p| {
         p.starts_with("cuda-drivers")
             || p == "nvidia-kernel-dkms"
             || p.starts_with("kmod-nvidia-latest")
     });
+    let proprietary = proprietary_marker
+        || (!open
+            && packages.iter().any(|p| {
+                p.starts_with("nvidia-driver")
+                    || p.starts_with("nvidia-compute-")
+                    || p.starts_with("nvidia-video-")
+            }));
     let flavor = match (open, proprietary) {
         (true, false) => DriverFlavorState::Open,
         (false, true) => DriverFlavorState::Proprietary,

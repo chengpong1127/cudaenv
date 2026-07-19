@@ -14,10 +14,28 @@ pub enum Command {
     Install(InstallArgs),
     /// Display the current GPU environment.
     Status,
+    /// Upgrade installed NVIDIA components to their latest compatible versions.
+    Upgrade(UpgradeArgs),
     /// Diagnose common GPU driver problems.
     Doctor(DoctorArgs),
     /// Plan and remove CUDA Toolkit and NVIDIA driver packages on Ubuntu.
     Uninstall(UninstallArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct UpgradeArgs {
+    /// Upgrade the installed NVIDIA driver.
+    #[arg(long)]
+    pub driver: bool,
+    /// Upgrade installed CUDA Toolkits.
+    #[arg(long)]
+    pub toolkit: bool,
+    /// Print the plan without changing the system.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Do not ask for final confirmation.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug)]

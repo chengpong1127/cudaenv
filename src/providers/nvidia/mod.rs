@@ -13,6 +13,7 @@ pub mod repository;
 pub mod state;
 pub mod toolkit;
 pub mod uninstall;
+pub mod upgrade;
 
 pub struct NvidiaProvider;
 

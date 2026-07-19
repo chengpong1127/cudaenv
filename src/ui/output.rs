@@ -3,6 +3,7 @@ use crate::model::{
     operation::OperationPlan,
     system::OsInfo,
 };
+use crate::providers::nvidia::upgrade::AvailableUpgrades;
 
 pub fn operation_plan(plan: &OperationPlan) {
     println!("{}\n", plan.title);
@@ -34,7 +35,11 @@ pub fn operation_completed(plan: &OperationPlan) {
     }
 }
 
-pub fn system_status(os: &OsInfo, providers: &[ProviderStatus]) {
+pub fn system_status(
+    os: &OsInfo,
+    providers: &[ProviderStatus],
+    upgrades: Option<&AvailableUpgrades>,
+) {
     println!("GPU Environment\n");
     println!("OS:\n{}", os.display_name());
     for status in providers {
@@ -51,6 +56,9 @@ pub fn system_status(os: &OsInfo, providers: &[ProviderStatus]) {
             status.vendor,
             status.driver.description()
         );
+        if let Some(version) = upgrades.and_then(|value| value.driver.as_deref()) {
+            println!("Available: {version}");
+        }
         println!(
             "\n{} Driver runtime:\n{}",
             status.vendor,
@@ -61,6 +69,9 @@ pub fn system_status(os: &OsInfo, providers: &[ProviderStatus]) {
         );
         for toolkit in &status.toolkits {
             println!("\n{}:\n{}", toolkit.name, toolkit.version);
+            if let Some(version) = upgrades.and_then(|value| value.toolkit.as_deref()) {
+                println!("Available compatible version: {version}");
+            }
         }
         if status.toolkits.is_empty() {
             println!("\nDevelopment Toolkit:\nNot installed");
