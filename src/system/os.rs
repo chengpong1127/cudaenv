@@ -115,7 +115,7 @@ fn map_distribution(os_type: Type, release_id: Option<&str>) -> Result<Distribut
         Type::Linux | Type::Unknown if matches!(release_id, Some("azurelinux" | "azl")) => {
             Distribution::AzureLinux
         }
-        _ => bail!("NVIDIA driver installation is not supported on {os_type}"),
+        _ => bail!("NVIDIA CUDA repositories are not supported on {os_type}"),
     };
     Ok(distribution)
 }

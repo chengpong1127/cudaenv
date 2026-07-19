@@ -22,27 +22,19 @@ impl DriverFlavor {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Selection {
-    Selected(DriverFlavor),
-    NeedsUserChoice,
-}
-
-pub fn select(mode: DriverMode, gpus: &[Gpu]) -> Selection {
+pub fn select(mode: DriverMode, gpus: &[Gpu]) -> DriverFlavor {
     match mode {
-        DriverMode::Open => Selection::Selected(DriverFlavor::Open),
-        DriverMode::Proprietary => Selection::Selected(DriverFlavor::Proprietary),
+        DriverMode::Open => DriverFlavor::Open,
+        DriverMode::Proprietary => DriverFlavor::Proprietary,
         DriverMode::Auto
             if gpus
                 .iter()
                 .any(|gpu| gpu.generation == Generation::MaxwellPascalVolta) =>
         {
-            Selection::Selected(DriverFlavor::Proprietary)
+            DriverFlavor::Proprietary
         }
-        DriverMode::Auto if gpus.iter().any(|gpu| gpu.generation == Generation::Unknown) => {
-            Selection::NeedsUserChoice
-        }
-        DriverMode::Auto => Selection::Selected(DriverFlavor::Open),
+        // Open is the safe, non-interactive default for both newer and unidentified GPUs.
+        DriverMode::Auto => DriverFlavor::Open,
     }
 }
 
@@ -120,7 +112,7 @@ mod tests {
     fn turing_or_newer_selects_open() {
         assert_eq!(
             select(DriverMode::Auto, &[gpu(Generation::TuringOrNewer)]),
-            Selection::Selected(DriverFlavor::Open)
+            DriverFlavor::Open
         );
     }
 
@@ -128,15 +120,15 @@ mod tests {
     fn old_gpu_falls_back_to_proprietary() {
         assert_eq!(
             select(DriverMode::Auto, &[gpu(Generation::MaxwellPascalVolta)]),
-            Selection::Selected(DriverFlavor::Proprietary)
+            DriverFlavor::Proprietary
         );
     }
 
     #[test]
-    fn unknown_gpu_requires_user_choice() {
+    fn unknown_gpu_defaults_to_open() {
         assert_eq!(
             select(DriverMode::Auto, &[gpu(Generation::Unknown)]),
-            Selection::NeedsUserChoice
+            DriverFlavor::Open
         );
     }
 
@@ -146,9 +138,6 @@ mod tests {
             gpu(Generation::TuringOrNewer),
             gpu(Generation::MaxwellPascalVolta),
         ];
-        assert_eq!(
-            select(DriverMode::Auto, &gpus),
-            Selection::Selected(DriverFlavor::Proprietary)
-        );
+        assert_eq!(select(DriverMode::Auto, &gpus), DriverFlavor::Proprietary);
     }
 }

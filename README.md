@@ -17,23 +17,29 @@ cargo build
 cargo test
 ```
 
-## Driver installation
+## Guided installation
 
 ```bash
 cargo run -- install
-cargo run -- install -- --driver open
-cargo run -- install -- --driver proprietary --yes
-cargo run -- install -- --driver auto --dry-run
+cargo run -- install --profile model-training
+cargo run -- install --profile cuda-development --toolkit-version 13.3
+cargo run -- install --profile cuda-development --dry-run
 ```
 
-`auto` selects open kernel modules for Turing and newer GPUs and proprietary
-modules for Maxwell, Pascal, or Volta. A mixed system uses proprietary modules
-if any GPU requires them. If PCI data cannot identify a GPU generation, the CLI
-asks which flavor to install rather than guessing.
+With no `--profile`, `install` asks whether the machine is for model training or
+CUDA development. Model training installs only the NVIDIA driver. CUDA
+development installs the driver and the requested versioned CUDA Toolkit.
+
+Driver flavor selection is automatic. Unidentified GPUs default to open kernel
+modules without another prompt. The optional `--driver` flag can still provide
+an explicit override.
 
 Every install prints the full repository and package command plan first. It asks
 for confirmation unless `--yes` is supplied; `--dry-run` never changes the
-system. This command installs only the NVIDIA driver and never the CUDA Toolkit.
+system. For CUDA development, `13.3` becomes the versioned package
+`cuda-toolkit-13-3`; the network repository is configured only when needed,
+package availability is checked before installation, and `nvcc --version`
+verifies the result.
 
 Other inspection commands remain available:
 

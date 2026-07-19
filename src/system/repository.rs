@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::system::os::{Distribution, OsInfo, PackageManager};
+use crate::system::os::{Distribution, OsInfo};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Repository {
@@ -50,7 +50,7 @@ pub fn resolve(os: &OsInfo) -> Result<Repository> {
         "x86_64" | "amd64" => "x86_64",
         "aarch64" | "arm64" => "sbsa",
         architecture => bail!(
-            "NVIDIA does not publish a supported driver repository for architecture {architecture} on {}",
+            "NVIDIA does not publish a supported CUDA repository for architecture {architecture} on {}",
             os.display_name()
         ),
     };
@@ -81,68 +81,6 @@ fn version_major(version: &str) -> Option<u32> {
         .trim_start_matches(['v', 'V'])
         .parse()
         .ok()
-}
-
-pub fn repository_commands(
-    os: &OsInfo,
-    repository: &Repository,
-) -> Vec<crate::system::command::CommandSpec> {
-    use crate::system::command::CommandSpec;
-    match os.package_manager() {
-        PackageManager::AptGet => {
-            let package = "/tmp/cuda-keyring_1.1-1_all.deb";
-            vec![
-                CommandSpec::new(
-                    "curl",
-                    [
-                        "--fail",
-                        "--location",
-                        "--output",
-                        package,
-                        &format!("{}cuda-keyring_1.1-1_all.deb", repository.base_url),
-                    ],
-                ),
-                CommandSpec::sudo("dpkg", ["-i", package]),
-                CommandSpec::sudo("apt-get", ["update"]),
-            ]
-        }
-        PackageManager::Dnf => {
-            let url = format!("{}cuda-{}.repo", repository.base_url, repository.distro);
-            vec![
-                CommandSpec::sudo(
-                    "dnf",
-                    ["config-manager", "addrepo", "--from-repofile", &url],
-                ),
-                CommandSpec::sudo("dnf", ["clean", "expire-cache"]),
-            ]
-        }
-        PackageManager::Tdnf => {
-            let url = format!("{}cuda-{}.repo", repository.base_url, repository.distro);
-            vec![
-                CommandSpec::sudo(
-                    "curl",
-                    [
-                        "--fail",
-                        "--location",
-                        "--output",
-                        "/etc/yum.repos.d/cuda-azl3.repo",
-                        &url,
-                    ],
-                ),
-                CommandSpec::sudo("tdnf", ["clean", "all"]),
-            ]
-        }
-        PackageManager::Zypper => {
-            let url = format!("{}cuda-{}.repo", repository.base_url, repository.distro);
-            vec![
-                CommandSpec::sudo(
-                    "zypper",
-                    ["--non-interactive", "addrepo", &url, "cuda-nvidia"],
-                ),
-                CommandSpec::sudo("zypper", ["--non-interactive", "refresh"]),
-            ]
-        }
-    }
 }
 
 #[cfg(test)]
