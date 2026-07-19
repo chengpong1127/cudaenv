@@ -131,10 +131,6 @@ pub fn detect_version() -> Result<Option<String>> {
     version_from_proc()
 }
 
-pub fn nvidia_smi_available() -> bool {
-    Command::new("nvidia-smi").arg("--help").output().is_ok()
-}
-
 fn version_from_nvidia_smi() -> Result<Option<String>> {
     let output = match Command::new("nvidia-smi")
         .args(["--query-gpu=driver_version", "--format=csv,noheader"])

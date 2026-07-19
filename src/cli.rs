@@ -31,9 +31,7 @@ pub enum UsageProfile {
 impl UsageProfile {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ModelTraining => {
-                "Train machine learning models with PyTorch, TensorFlow, or JAX"
-            }
+            Self::ModelTraining => "Train machine learning models with PyTorch, TensorFlow, or JAX",
             Self::CudaDevelopment => {
                 "Develop CUDA applications or custom GPU kernels (only if you write CUDA code directly)"
             }
