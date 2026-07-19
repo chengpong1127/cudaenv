@@ -20,6 +20,30 @@ pub fn package(version: Option<&str>) -> Result<String> {
     }
 }
 
+pub fn detect_version() -> Result<Option<String>> {
+    for nvcc in ["nvcc", "/usr/local/cuda/bin/nvcc"] {
+        let output = match Command::new(nvcc).arg("--version").output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).with_context(|| format!("failed to run {nvcc}")),
+        };
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(version) = parse_nvcc_version(&stdout) {
+                return Ok(Some(version.to_owned()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn parse_nvcc_version(output: &str) -> Option<&str> {
+    let (_, after_release) = output.split_once("release ")?;
+    after_release
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .find(|part| !part.is_empty())
+}
+
 pub fn versioned_package(version: &str) -> Result<String> {
     let normalized = version.trim().replace('.', "-");
     let mut parts = normalized.split('-');
@@ -220,6 +244,13 @@ mod tests {
     fn uses_latest_meta_package_when_version_is_not_pinned() {
         assert_eq!(package(None).unwrap(), "cuda-toolkit");
         assert_eq!(package(Some("13.3")).unwrap(), "cuda-toolkit-13-3");
+    }
+
+    #[test]
+    fn parses_nvcc_toolkit_version() {
+        let output = "Cuda compilation tools, release 13.1, V13.1.80\n";
+        assert_eq!(parse_nvcc_version(output), Some("13.1"));
+        assert_eq!(parse_nvcc_version("not nvcc output"), None);
     }
 
     #[test]

@@ -52,3 +52,8 @@ cargo run -- doctor
 cargo run -- uninstall
 cargo run -- uninstall --yes
 ```
+
+`status` reports both the loaded NVIDIA driver version and active CUDA Toolkit
+version. Install and uninstall plans use that status: already-installed
+components are skipped, and uninstall only removes components detected as
+present.

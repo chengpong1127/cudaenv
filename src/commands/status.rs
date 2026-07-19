@@ -1,14 +1,14 @@
 use anyhow::Result;
 
 use crate::{
-    system::{driver, gpu, os},
+    system::{environment, gpu, os},
     ui::output,
 };
 
 pub fn run() -> Result<()> {
     let os = os::detect()?;
     let gpus = gpu::detect()?;
-    let driver = driver::detect_version()?;
+    let status = environment::detect()?;
     let gpu_summary = (!gpus.is_empty()).then(|| {
         gpus.iter()
             .map(|gpu| gpu.name.as_str())
@@ -16,6 +16,11 @@ pub fn run() -> Result<()> {
             .join("\n")
     });
 
-    output::system_status(&os, gpu_summary.as_deref(), driver.as_deref());
+    output::system_status(
+        &os,
+        gpu_summary.as_deref(),
+        status.driver_version.as_deref(),
+        status.toolkit_version.as_deref(),
+    );
     Ok(())
 }

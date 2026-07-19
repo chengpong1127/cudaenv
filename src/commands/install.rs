@@ -5,9 +5,9 @@ use crate::{
     system::{
         command::CommandSpec,
         driver::{self, DriverFlavor},
-        gpu, os, repository, toolkit,
+        environment, gpu, os, repository, toolkit,
     },
-    ui::prompt,
+    ui::{output, prompt},
 };
 
 pub fn run(args: InstallArgs) -> Result<()> {
@@ -30,18 +30,45 @@ pub fn run(args: InstallArgs) -> Result<()> {
         UsageProfile::ModelTraining => None,
         UsageProfile::CudaDevelopment => Some(toolkit::package(args.toolkit.as_deref())?),
     };
-    print_plan(
-        &os,
-        &gpus,
-        profile,
+    let current = environment::detect()?;
+    let install_driver = current.driver_version.is_none();
+    let install_toolkit = toolkit_package
+        .as_deref()
+        .is_some_and(|package| toolkit_install_needed(package, current.toolkit_version.as_deref()));
+    let repository_setup_commands = if (install_driver || install_toolkit) && !repository_configured
+    {
+        toolkit::repository_setup_commands(os.package_manager(), &repository)
+    } else {
+        Vec::new()
+    };
+    let commands = operation_commands(
+        os.package_manager(),
         flavor,
-        &repository,
-        repository_configured,
         toolkit_package.as_deref(),
+        install_driver,
+        install_toolkit,
     );
+    output::installation_plan(&output::InstallationPlan {
+        os: &os,
+        gpus: &gpus,
+        profile: profile.label(),
+        driver_package: flavor.package(),
+        repository: &repository,
+        repository_configured,
+        toolkit_package: toolkit_package.as_deref(),
+        current: &current,
+        install_driver,
+        install_toolkit,
+        repository_setup_commands: &repository_setup_commands,
+        commands: &commands,
+    });
 
     if args.dry_run {
         println!("\nDry run complete. No changes were made.");
+        return Ok(());
+    }
+    if !install_driver && !install_toolkit {
+        println!("\nRequested components are already installed. No changes were made.");
         return Ok(());
     }
     if !args.yes && !prompt::confirm_install()? {
@@ -52,23 +79,31 @@ pub fn run(args: InstallArgs) -> Result<()> {
     toolkit::refresh_metadata(os.package_manager())?;
 
     // Check before installing anything so an unavailable toolkit cannot leave a partial plan.
-    if let Some(package) = toolkit_package.as_deref() {
+    if install_toolkit && let Some(package) = toolkit_package.as_deref() {
         toolkit::ensure_package_available(os.package_manager(), package)?;
     }
-    install_command(os.package_manager(), flavor).execute()?;
-    if let Some(package) = toolkit_package.as_deref() {
+    if install_driver {
+        install_command(os.package_manager(), flavor).execute()?;
+    }
+    if install_toolkit && let Some(package) = toolkit_package.as_deref() {
         toolkit::install_package(os.package_manager(), package)?;
         toolkit::verify_installation()?;
     }
 
-    match profile {
-        UsageProfile::ModelTraining => println!("\nNVIDIA driver installation completed."),
-        UsageProfile::CudaDevelopment => {
-            println!("\nNVIDIA driver and CUDA Toolkit installation completed.")
-        }
+    println!("\nInstallation completed.");
+    if install_driver {
+        println!("Reboot to load the NVIDIA driver.");
     }
-    println!("Reboot to load the NVIDIA driver.");
     Ok(())
+}
+
+fn toolkit_install_needed(package: &str, current_version: Option<&str>) -> bool {
+    let Some(current_version) = current_version else {
+        return true;
+    };
+    toolkit::versioned_package(current_version)
+        .map(|current_package| current_package != package)
+        .unwrap_or(true)
 }
 
 fn resolve_profile(profile: Option<UsageProfile>, toolkit: Option<&str>) -> Result<UsageProfile> {
@@ -94,55 +129,24 @@ fn install_command(manager: os::PackageManager, flavor: DriverFlavor) -> Command
     }
 }
 
-fn print_plan(
-    os: &os::OsInfo,
-    gpus: &[gpu::Gpu],
-    profile: UsageProfile,
-    flavor: DriverFlavor,
-    repository: &repository::Repository,
-    repository_configured: bool,
-    toolkit_package: Option<&str>,
-) {
-    println!("Installation Plan\n");
-    println!("OS: {}", os.display_name());
-    println!("Package manager: {:?}", os.package_manager());
-    println!("Repository: {}", repository.base_url);
-    println!("Profile: {}", profile.label());
-    println!("Driver: {}", flavor.package());
-    println!(
-        "CUDA Toolkit: {}",
-        toolkit_package.unwrap_or("not installed")
-    );
-    println!("GPU(s):");
-    for gpu in gpus {
-        println!("  - {} ({:?})", gpu.name, gpu.generation);
-    }
-    println!("\nCommands:");
-    if repository_configured {
-        println!("  # NVIDIA CUDA repository is already configured");
-    } else {
-        for command in toolkit::repository_setup_commands(os.package_manager(), repository) {
-            println!("  $ {}", command.display());
-        }
-    }
-    let commands = operation_commands(os.package_manager(), flavor, toolkit_package);
-    for command in &commands {
-        println!("  $ {}", command.display());
-    }
-    println!("No system changes will be made until you confirm.");
-}
-
 fn operation_commands(
     manager: os::PackageManager,
     flavor: DriverFlavor,
     toolkit_package: Option<&str>,
+    install_driver: bool,
+    install_toolkit: bool,
 ) -> Vec<CommandSpec> {
+    if !install_driver && !install_toolkit {
+        return Vec::new();
+    }
     let mut commands = vec![toolkit::metadata_refresh_command(manager)];
-    if let Some(package) = toolkit_package {
+    if install_toolkit && let Some(package) = toolkit_package {
         commands.push(toolkit::package_availability_command(manager, package));
     }
-    commands.push(install_command(manager, flavor));
-    if let Some(package) = toolkit_package {
+    if install_driver {
+        commands.push(install_command(manager, flavor));
+    }
+    if install_toolkit && let Some(package) = toolkit_package {
         commands.push(toolkit::package_install_command(manager, package));
         commands.push(toolkit::verification_command());
     }
@@ -175,11 +179,17 @@ mod tests {
 
     #[test]
     fn model_training_plan_has_driver_only() {
-        let plan = operation_commands(os::PackageManager::AptGet, DriverFlavor::Open, None)
-            .iter()
-            .map(CommandSpec::display)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let plan = operation_commands(
+            os::PackageManager::AptGet,
+            DriverFlavor::Open,
+            None,
+            true,
+            false,
+        )
+        .iter()
+        .map(CommandSpec::display)
+        .collect::<Vec<_>>()
+        .join("\n");
         assert!(plan.contains("nvidia-open"));
         assert!(!plan.contains("cuda-toolkit"));
         assert!(!plan.contains("nvcc"));
@@ -191,6 +201,8 @@ mod tests {
             os::PackageManager::Dnf,
             DriverFlavor::Open,
             Some("cuda-toolkit-13-3"),
+            true,
+            true,
         )
         .iter()
         .map(CommandSpec::display)
@@ -208,5 +220,29 @@ mod tests {
             UsageProfile::CudaDevelopment
         );
         assert!(resolve_profile(Some(UsageProfile::ModelTraining), Some("13.1")).is_err());
+    }
+
+    #[test]
+    fn installed_driver_is_omitted_from_toolkit_plan() {
+        let plan = operation_commands(
+            os::PackageManager::AptGet,
+            DriverFlavor::Open,
+            Some("cuda-toolkit-13-1"),
+            false,
+            true,
+        )
+        .iter()
+        .map(CommandSpec::display)
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(!plan.contains("nvidia-open"));
+        assert!(plan.contains("cuda-toolkit-13-1"));
+    }
+
+    #[test]
+    fn matching_pinned_toolkit_is_already_installed() {
+        assert!(!toolkit_install_needed("cuda-toolkit-13-1", Some("13.1")));
+        assert!(toolkit_install_needed("cuda-toolkit-13-2", Some("13.1")));
+        assert!(toolkit_install_needed("cuda-toolkit", Some("13.1")));
     }
 }
