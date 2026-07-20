@@ -10,6 +10,7 @@ pub mod install;
 pub mod policy;
 pub mod recipe;
 pub mod repository;
+pub mod runtime;
 pub mod state;
 pub mod toolkit;
 pub mod uninstall;

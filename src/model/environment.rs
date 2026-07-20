@@ -28,6 +28,8 @@ pub struct ProviderStatus {
     pub driver: DriverInstallation,
     pub driver_version: Option<String>,
     pub driver_runtime_operational: bool,
+    pub driver_runtime_state: DriverRuntimeState,
+    pub dkms_status: Option<String>,
     pub driver_module: Option<DriverModuleInfo>,
     pub kernel_version: Option<String>,
     pub secure_boot_enabled: Option<bool>,
@@ -43,6 +45,15 @@ pub struct DriverModuleInfo {
     pub version: Option<String>,
     pub signer: Option<String>,
     pub signature_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriverRuntimeState {
+    Operational,
+    RebootLikelyRequired,
+    DkmsModuleMissing,
+    SecureBootBlocked,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,6 +243,8 @@ pub enum FixId {
     RepairCudaSymlink,
     UpgradeDriver,
     Reboot,
+    RebootThenRecheck,
+    ResolveSecureBoot,
     DebugDriver,
     DebugToolkit,
 }

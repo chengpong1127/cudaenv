@@ -10,7 +10,7 @@ use crate::model::{
     system::OsInfo,
 };
 
-use super::{driver, gpu, toolkit};
+use super::{driver, gpu, runtime, toolkit};
 
 pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
     let devices = gpu::detect()?;
@@ -29,6 +29,24 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
         runfile_uninstaller,
         installer_log,
     );
+    let dkms_status = command_optional_stdout("dkms", &["status"]);
+    let detected_driver_version = driver_inspection
+        .runtime_version
+        .as_deref()
+        .or_else(|| driver_inspection.module_info.as_ref()?.version.as_deref());
+    let driver_runtime_state = runtime::classify(runtime::RuntimeEvidence {
+        driver: &driver,
+        driver_version: detected_driver_version,
+        module_loaded,
+        runtime_operational: driver_inspection.runtime_operational,
+        kernel_release: driver_inspection.kernel_version.as_deref(),
+        dkms_status: dkms_status.as_deref(),
+        secure_boot_enabled: driver_inspection.secure_boot_enabled,
+        module_signed: driver_inspection
+            .module_info
+            .as_ref()
+            .is_some_and(|module| module.signer.is_some() || module.signature_id.is_some()),
+    });
     let active_toolkit = toolkit::detect_active()?;
     let toolkits = toolkit::managed_status(&packages, active_toolkit.as_ref());
     Ok(ProviderStatus {
@@ -37,12 +55,22 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
         driver,
         driver_version,
         driver_runtime_operational: driver_inspection.runtime_operational,
+        driver_runtime_state,
+        dkms_status,
         driver_module: driver_inspection.module_info,
         kernel_version: driver_inspection.kernel_version,
         secure_boot_enabled: driver_inspection.secure_boot_enabled,
         toolkits,
         active_toolkit,
     })
+}
+
+fn command_optional_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().into())
 }
 
 pub fn classify_driver(

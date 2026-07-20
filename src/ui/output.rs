@@ -5,12 +5,13 @@ use console::style;
 use crate::model::{
     environment::{
         DiagnosticSection, DiagnosticStatus, Diagnostics, DriverFlavorState, DriverInstallation,
-        DriverPackageScope, ProviderStatus,
+        DriverPackageScope, DriverRuntimeState, ProviderStatus,
     },
     operation::OperationPlan,
     system::OsInfo,
 };
 use crate::platform::command::ExecutionEvent;
+use crate::providers::nvidia::runtime;
 
 pub fn operation_plan(plan: &OperationPlan) {
     print!("{}", format_operation_plan(plan));
@@ -207,10 +208,12 @@ pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: 
         status_row(
             &mut rendered,
             "Driver runtime",
-            if status.driver_runtime_operational {
-                "Operational"
-            } else {
-                "Not operational"
+            match status.driver_runtime_state {
+                DriverRuntimeState::Operational => "Operational",
+                DriverRuntimeState::RebootLikelyRequired => "Reboot likely required",
+                DriverRuntimeState::DkmsModuleMissing
+                | DriverRuntimeState::SecureBootBlocked
+                | DriverRuntimeState::Failed => "Not operational",
             },
         );
         status_row(
@@ -278,11 +281,12 @@ pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: 
         }
 
         if !matches!(status.driver, DriverInstallation::Missing)
-            && !status.driver_runtime_operational
+            && status.driver_runtime_state != DriverRuntimeState::Operational
         {
             writeln!(
                 rendered,
-                "\n⚠ The NVIDIA driver is installed but not currently operational.\n  Run `arc doctor` for diagnostics."
+                "\n⚠ {}",
+                runtime::status_warning(status.driver_runtime_state)
             )
             .unwrap();
         }
@@ -453,11 +457,20 @@ pub fn format_diagnostics(diagnostics: &Diagnostics) -> String {
             writeln!(rendered, "   - {step}").unwrap();
         }
     }
-    writeln!(
-        rendered,
-        "\nNo fixes were executed. After completing the plan, rerun `arc doctor`."
-    )
-    .unwrap();
+    if diagnostics
+        .fix_plan
+        .fixes
+        .iter()
+        .any(|fix| !fix.manual_steps.is_empty())
+    {
+        writeln!(rendered, "\nComplete the recommended manual actions above.").unwrap();
+    } else {
+        writeln!(
+            rendered,
+            "\nNo fixes were executed. After completing the plan, rerun `arc doctor`."
+        )
+        .unwrap();
+    }
     rendered
 }
 
@@ -556,6 +569,27 @@ mod tests {
     }
 
     #[test]
+    fn manual_fix_plan_does_not_claim_no_fixes_were_executed() {
+        let diagnostics = Diagnostics {
+            vendor: GpuVendor::Nvidia,
+            checks: vec![sample(DiagnosticSection::Driver, DiagnosticStatus::Error)],
+            fix_plan: FixPlan {
+                causes: vec![],
+                fixes: vec![crate::model::environment::Fix {
+                    id: crate::model::environment::FixId::RebootThenRecheck,
+                    title: "Reboot, then verify".into(),
+                    commands: vec![],
+                    manual_steps: vec!["Run `sudo reboot`.".into()],
+                    order: 1,
+                }],
+            },
+        };
+        let output = format_diagnostics(&diagnostics);
+        assert!(output.contains("Complete the recommended manual actions"));
+        assert!(!output.contains("No fixes were executed"));
+    }
+
+    #[test]
     fn status_is_compact_groups_duplicate_gpus_and_warns_on_inactive_driver() {
         let os = OsInfo {
             distribution: Distribution::Ubuntu,
@@ -573,10 +607,10 @@ mod tests {
             "GPU                 2 × NVIDIA GeForce RTX 2080",
             "Driver installation Managed · Open",
             "Driver version      610.43.02",
-            "Driver runtime      Not operational",
+            "Driver runtime      Reboot likely required",
             "CUDA Toolkit        Not installed",
             "nvcc                Not found",
-            "Run `arc doctor` for diagnostics.",
+            "Run `sudo reboot`, then rerun `arc status`.",
         ] {
             assert!(
                 output.contains(expected),
@@ -634,6 +668,8 @@ mod tests {
             },
             driver_version: None,
             driver_runtime_operational: false,
+            driver_runtime_state: DriverRuntimeState::RebootLikelyRequired,
+            dkms_status: Some("nvidia/610.43.02, 6.8.0-test, x86_64: installed".into()),
             driver_module: Some(DriverModuleInfo {
                 path: Some("/lib/modules/test/nvidia.ko".into()),
                 version: Some("610.43.02".into()),

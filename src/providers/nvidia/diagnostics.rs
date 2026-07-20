@@ -12,7 +12,8 @@ use crate::{
         device::GpuVendor,
         environment::{
             Confidence, DiagnosticCause, DiagnosticCheck, DiagnosticId, DiagnosticSection,
-            DiagnosticStatus, Diagnostics, DriverInstallation, Fix, FixId, FixPlan,
+            DiagnosticStatus, Diagnostics, DriverInstallation, DriverRuntimeState, Fix, FixId,
+            FixPlan,
         },
         system::OsInfo,
     },
@@ -23,7 +24,7 @@ use super::{
     compatibility::{self, Compatibility},
     driver,
     gpu::{self, NvidiaGpu},
-    policy, recipe, repository, state,
+    policy, recipe, repository, runtime, state,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +62,7 @@ pub struct NvidiaEvidence {
     pub secure_boot_enabled: Option<bool>,
     pub dkms_status: Option<String>,
     pub driver_version: Option<String>,
+    pub driver_module_signed: bool,
     pub toolkit_packages: Vec<String>,
     pub managed_toolkit_version: Option<String>,
     pub managed_nvcc: CommandEvidence,
@@ -106,7 +108,16 @@ pub fn collect_evidence() -> Result<NvidiaEvidence> {
             .exists(),
         secure_boot_enabled: driver::secure_boot_enabled(),
         dkms_status: command_optional_stdout("dkms", &["status"]),
-        driver_version: status.driver_version,
+        driver_version: status.driver_version.clone().or_else(|| {
+            status
+                .driver_module
+                .as_ref()
+                .and_then(|module| module.version.clone())
+        }),
+        driver_module_signed: status
+            .driver_module
+            .as_ref()
+            .is_some_and(|module| module.signer.is_some() || module.signature_id.is_some()),
         toolkit_packages: managed
             .map(|toolkit| toolkit.packages.clone())
             .unwrap_or_default(),
@@ -141,6 +152,7 @@ pub fn diagnose(e: NvidiaEvidence, profile: DoctorProfile) -> Result<Diagnostics
 }
 
 pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck> {
+    let runtime_state = runtime_state(e);
     let gpu_ok = !e.gpus.is_empty();
     let repository_state = repository::resolve(&e.os);
     let os_resolution = repository::resolve(&e.os)
@@ -314,9 +326,17 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
                 },
                 e.dkms_status.as_deref().unwrap_or("unavailable")
             )],
-            (!e.nvidia_module_loaded).then(|| "The NVIDIA kernel module is not loaded.".into()),
+            runtime::module_problem(runtime_state).map(str::to_owned),
             vec![DiagnosticId::DriverPackage],
-            vec![FixId::RebuildDkms, FixId::Reboot],
+            match runtime_state {
+                DriverRuntimeState::Operational => vec![],
+                DriverRuntimeState::RebootLikelyRequired => vec![FixId::RebootThenRecheck],
+                DriverRuntimeState::DkmsModuleMissing => {
+                    vec![FixId::RebuildDkms]
+                }
+                DriverRuntimeState::SecureBootBlocked => vec![FixId::ResolveSecureBoot],
+                DriverRuntimeState::Failed => vec![FixId::DebugDriver],
+            },
         ),
     );
     push_dependent(
@@ -505,6 +525,7 @@ pub fn fix_plan(
             .any(|c| c.id == id && c.status == DiagnosticStatus::Error)
     };
     let mut causes = Vec::new();
+    let runtime_state = runtime_state(e);
     if failed(DiagnosticId::NvidiaGpu) {
         causes.push(cause(
             "The NVIDIA GPU is not visible",
@@ -544,6 +565,29 @@ pub fn fix_plan(
                 FixId::Reboot,
             ],
         ));
+    }
+    if matches!(e.driver, DriverInstallation::Managed { .. }) && !e.nvidia_module_loaded {
+        match runtime_state {
+            DriverRuntimeState::RebootLikelyRequired => causes.push(cause(
+                "The NVIDIA driver was installed successfully and a reboot is likely required",
+                vec![FixId::RebootThenRecheck],
+            )),
+            DriverRuntimeState::DkmsModuleMissing if e.matching_kernel_headers => {
+                causes.push(cause(
+                    "The matching NVIDIA DKMS module is missing for the running kernel",
+                    vec![FixId::RebuildDkms],
+                ))
+            }
+            DriverRuntimeState::SecureBootBlocked => causes.push(cause(
+                "Secure Boot is blocking the NVIDIA kernel module",
+                vec![FixId::ResolveSecureBoot],
+            )),
+            DriverRuntimeState::Failed => causes.push(cause(
+                "The NVIDIA module still fails to load",
+                vec![FixId::DebugDriver],
+            )),
+            _ => {}
+        }
     }
     if version_mismatch(e) && matches!(e.driver, DriverInstallation::Managed { .. }) {
         causes.push(cause(
@@ -610,6 +654,17 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
     let repair_commands = managed_driver_repair_commands(e, &prerequisites);
     let (symlink_commands, symlink_steps) = cuda_symlink_repair(e);
     Ok(vec![
+        fix_with_manual(
+            FixId::RebootThenRecheck,
+            "Reboot, then verify the driver again",
+            vec![],
+            vec![
+                "Run `sudo reboot`.".into(),
+                "After the machine starts again, run `arc doctor`.".into(),
+                "If the module still does not load after rebooting, run `sudo modprobe nvidia` and inspect the kernel logs reported by `arc doctor`.".into(),
+            ],
+            1,
+        ),
         fix(
             FixId::InspectHardware,
             "Verify that the NVIDIA GPU is visible",
@@ -650,13 +705,14 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
             managed_package_reinstall_commands(&e.os, driver_packages(&e.driver)),
             30,
         ),
-        fix(
+        fix_with_manual(
             FixId::RebuildDkms,
             "Rebuild NVIDIA DKMS modules",
             vec![CommandSpec::sudo(
                 "dkms",
                 ["autoinstall", "-k", &e.kernel_release],
             )],
+            vec!["If DKMS cannot build the matching module, reinstall the managed NVIDIA driver packages, then rerun `arc doctor`.".into()],
             40,
         ),
         fix(
@@ -677,12 +733,20 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
         ),
         fix(
             FixId::DebugDriver,
-            "Collect driver evidence",
+            "Try loading the module and inspect the kernel logs",
             vec![
+                CommandSpec::sudo("modprobe", ["nvidia"]),
                 CommandSpec::new("journalctl", ["-k", "-b", "-g", "NVRM|nvidia|nouveau"]),
                 CommandSpec::new("dkms", ["status"]),
             ],
             80,
+        ),
+        fix_with_manual(
+            FixId::ResolveSecureBoot,
+            "Enroll the NVIDIA module signing key or disable Secure Boot",
+            vec![],
+            vec!["Enroll the distribution/NVIDIA module signing key (MOK), or disable Secure Boot in firmware, then reboot and rerun `arc doctor`.".into()],
+            85,
         ),
         fix(
             FixId::DebugToolkit,
@@ -849,6 +913,18 @@ fn version_mismatch(e: &NvidiaEvidence) -> bool {
         .to_ascii_lowercase()
         .contains("driver/library version mismatch")
 }
+fn runtime_state(e: &NvidiaEvidence) -> DriverRuntimeState {
+    runtime::classify(runtime::RuntimeEvidence {
+        driver: &e.driver,
+        driver_version: e.driver_version.as_deref(),
+        module_loaded: e.nvidia_module_loaded,
+        runtime_operational: e.nvidia_smi.exists && e.nvidia_smi.succeeded,
+        kernel_release: Some(&e.kernel_release),
+        dkms_status: e.dkms_status.as_deref(),
+        secure_boot_enabled: e.secure_boot_enabled,
+        module_signed: e.driver_module_signed,
+    })
+}
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
@@ -924,6 +1000,7 @@ mod tests {
             secure_boot_enabled: Some(false),
             dkms_status: None,
             driver_version: Some("570.26".into()),
+            driver_module_signed: true,
             toolkit_packages: vec![],
             managed_toolkit_version: None,
             managed_nvcc: CommandEvidence::default(),
@@ -997,6 +1074,104 @@ mod tests {
             .unwrap();
         assert_eq!(toolkit.status, DiagnosticStatus::Error);
         assert!(toolkit.evidence[0].contains("system package(s): none"));
+    }
+
+    #[test]
+    fn freshly_installed_driver_keeps_module_check_failed_and_reboots_first() {
+        let mut e = evidence();
+        e.nvidia_module_loaded = false;
+        e.nvidia_smi.succeeded = false;
+        e.dkms_status = Some("nvidia/570.26, 6.8.0-generic, x86_64: installed".into());
+        let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
+        let module = diagnostics
+            .checks
+            .iter()
+            .find(|check| check.id == DiagnosticId::DriverModule)
+            .unwrap();
+        assert_eq!(module.status, DiagnosticStatus::Error);
+        assert!(
+            module
+                .problem
+                .as_deref()
+                .unwrap()
+                .contains("reboot is likely required")
+        );
+        assert_eq!(
+            diagnostics.fix_plan.fixes.first().map(|fix| fix.id),
+            Some(FixId::RebootThenRecheck)
+        );
+        let reboot = diagnostics.fix_plan.fixes.first().unwrap();
+        assert!(reboot.manual_steps[0].contains("sudo reboot"));
+        assert!(reboot.manual_steps[1].contains("arc doctor"));
+    }
+
+    #[test]
+    fn missing_running_kernel_dkms_module_requests_rebuild_or_reinstall() {
+        let mut e = evidence();
+        e.nvidia_module_loaded = false;
+        e.nvidia_smi.succeeded = false;
+        e.dkms_status = Some("nvidia/570.26, 6.5.0-old, x86_64: installed".into());
+        let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
+        let module = diagnostics
+            .checks
+            .iter()
+            .find(|check| check.id == DiagnosticId::DriverModule)
+            .unwrap();
+        assert!(
+            module
+                .problem
+                .as_deref()
+                .unwrap()
+                .contains("Rebuild the module or reinstall")
+        );
+        let rebuild = diagnostics
+            .fix_plan
+            .fixes
+            .iter()
+            .find(|fix| fix.id == FixId::RebuildDkms)
+            .unwrap();
+        assert!(rebuild.commands[0].display().contains("dkms autoinstall"));
+        assert!(rebuild.manual_steps[0].contains("reinstall"));
+    }
+
+    #[test]
+    fn secure_boot_blockage_has_specific_manual_fix() {
+        let mut e = evidence();
+        e.nvidia_module_loaded = false;
+        e.nvidia_smi.succeeded = false;
+        e.dkms_status = Some("nvidia/570.26, 6.8.0-generic, x86_64: installed".into());
+        e.secure_boot_enabled = Some(true);
+        e.driver_module_signed = false;
+        let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
+        let fix = diagnostics
+            .fix_plan
+            .fixes
+            .iter()
+            .find(|fix| fix.id == FixId::ResolveSecureBoot)
+            .unwrap();
+        assert!(fix.manual_steps[0].contains("MOK"));
+        assert!(
+            !diagnostics
+                .fix_plan
+                .fixes
+                .iter()
+                .any(|fix| fix.id == FixId::RebootThenRecheck)
+        );
+    }
+
+    #[test]
+    fn operational_driver_has_no_driver_runtime_error() {
+        let diagnostics = diagnose(evidence(), DoctorProfile::ModelTraining).unwrap();
+        assert_eq!(
+            diagnostics
+                .checks
+                .iter()
+                .find(|check| check.id == DiagnosticId::DriverModule)
+                .unwrap()
+                .status,
+            DiagnosticStatus::Pass
+        );
+        assert!(!diagnostics.has_errors());
     }
 
     #[test]

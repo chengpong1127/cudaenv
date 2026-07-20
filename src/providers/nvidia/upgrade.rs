@@ -1017,6 +1017,12 @@ mod tests {
                 driver: installation,
                 driver_version: driver.then(|| "580.65.06".into()),
                 driver_runtime_operational: driver,
+                driver_runtime_state: if driver {
+                    crate::model::environment::DriverRuntimeState::Operational
+                } else {
+                    crate::model::environment::DriverRuntimeState::Failed
+                },
+                dkms_status: None,
                 driver_module: None,
                 kernel_version: None,
                 secure_boot_enabled: None,

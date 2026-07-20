@@ -392,6 +392,8 @@ mod tests {
             driver,
             driver_version: Some("580.65.06".into()),
             driver_runtime_operational: true,
+            driver_runtime_state: crate::model::environment::DriverRuntimeState::Operational,
+            dkms_status: None,
             driver_module: None,
             kernel_version: None,
             secure_boot_enabled: None,
