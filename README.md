@@ -199,24 +199,25 @@ arc uninstall --yes
 ## Supported systems
 
 `arc` resolves only official NVIDIA repository targets. Repository
-compatibility is separate from NVIDIA's current validation matrix and from the
-releases exercised by arc's maintainers. When NVIDIA publishes one target
+compatibility is separate from NVIDIA's current validation matrix. When NVIDIA publishes one target
 for a major family (for example `rhel9` or `rhel10`), compatible newer minor
 releases in that same family resolve to it. arc never substitutes a target
 from another distribution family.
 
-| Distribution family | Compatible repository releases | NVIDIA validated | Tested by arc | Architectures |
-| --- | --- | --- | --- | --- |
-| Ubuntu | 22.04, 24.04, 26.04 | 22.04, 24.04, 26.04 | 24.04 | x86_64, sbsa |
-| Debian | 12.x, 13.x | 12, 13 | 12, 13 | x86_64 |
-| RHEL / AlmaLinux / Rocky Linux | 8.x, 9.x, 10.x | 8.10, 9.7, 10.1 | 8.10, 9.7, 10.1 | x86_64, sbsa |
-| Oracle Linux | 8.x, 9.x | 8, 9 | 8, 9 | x86_64 |
-| Fedora | 44 | 44 | 44 | x86_64 |
-| Amazon Linux | 2023.x | 2023 | 2023 | x86_64, sbsa |
-| Azure Linux | 3.x | 3.0 | 3.0 | x86_64, sbsa |
-| openSUSE Leap | 15.x, 16.x | 15.6, 16.0 | 15.6, 16.0 | x86_64 |
-| SLES | 15.x, 16.x | 15.6, 15.7, 16.0 | 15.6, 15.7, 16.0 | x86_64, sbsa |
-| KylinOS | V11, V11 2503 | V11, V11 2503 | V11 2503 | x86_64, sbsa |
+| Distribution family | Compatible repository releases | NVIDIA validated | Architectures |
+| --- | --- | --- | --- |
+| Ubuntu | 22.04, 24.04, 26.04 | 22.04, 24.04, 26.04 | x86_64, sbsa |
+| Debian | 12.x, 13.x | 12, 13 | x86_64 |
+| Red Hat Enterprise Linux | 8.x, 9.x, 10.x | 8.10, 9.8, 10.2 | x86_64, sbsa |
+| AlmaLinux | 8.x, 9.x, 10.x | 8.10, 9.8, 10.2 | x86_64 |
+| Rocky Linux | 8.x, 9.x, 10.x | 8.10, 9.8, 10.2 | x86_64 |
+| Oracle Linux | 8.x, 9.x | 8, 9 | x86_64 |
+| Fedora | 44 | 44 | x86_64 |
+| Amazon Linux | 2023.x | 2023 | x86_64, sbsa |
+| Azure Linux | 3.x | 3.0 | x86_64, sbsa |
+| openSUSE Leap | 15.6, 16.0 | 15.6 | x86_64 |
+| SLES | 15.6+, 16.0+ | 15.6, 15.7, 16.0 | x86_64, sbsa |
+| KylinOS | V11, V11 2503 | V11, V11 2503 | x86_64, sbsa |
 
 Unsupported major families, distribution-specific targets that NVIDIA does not
 publish, and unsupported CPU architectures are rejected.

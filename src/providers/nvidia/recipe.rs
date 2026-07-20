@@ -514,7 +514,8 @@ mod tests {
 
     #[test]
     fn validates_repository_families_without_cross_family_substitution() {
-        assert!(validate_release(&os(Distribution::OpenSuse, "15.5")).is_ok());
+        assert!(validate_release(&os(Distribution::OpenSuse, "15.6")).is_ok());
+        assert!(validate_release(&os(Distribution::OpenSuse, "15.5")).is_err());
         assert!(validate_release(&os(Distribution::Sles, "15.8")).is_ok());
         assert!(validate_release(&os(Distribution::Sles, "17.0")).is_err());
         assert!(validate_release(&os(Distribution::KylinOs, "V11 2403")).is_err());

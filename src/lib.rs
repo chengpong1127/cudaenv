@@ -1,8 +1,8 @@
 pub mod cli;
 mod commands;
-mod model;
-mod platform;
-mod providers;
+pub mod model;
+pub mod platform;
+pub mod providers;
 mod ui;
 
 use anyhow::Result;

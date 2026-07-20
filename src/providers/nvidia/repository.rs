@@ -17,6 +17,7 @@ const CUDA_KEYRING_PACKAGE: &str = "cuda-keyring_1.1-1_all.deb";
 enum ReleaseTargets {
     Exact(&'static [(&'static str, &'static str)]),
     Major(&'static [(u32, &'static str)]),
+    MajorMinorAtLeast(&'static [(u32, u32, &'static str)]),
 }
 
 #[derive(Clone, Copy)]
@@ -26,15 +27,15 @@ struct SupportPolicy {
     releases: ReleaseTargets,
     architectures: &'static [&'static str],
     nvidia_validated: &'static [&'static str],
-    arc_tested: &'static [&'static str],
 }
 
 const X86: &[&str] = &["x86_64"];
 const X86_SBSA: &[&str] = &["x86_64", "sbsa"];
 
-/// Repository compatibility, NVIDIA validation, and arc's own tested
-/// releases are intentionally represented separately here. Only repository
-/// compatibility controls target resolution.
+/// Repository compatibility and NVIDIA validation are represented separately.
+/// Only repository compatibility controls target resolution. Keep this matrix
+/// aligned with Tables 1 and 2 of NVIDIA's current CUDA Linux installation guide:
+/// https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#system-requirements
 const SUPPORT_POLICIES: &[SupportPolicy] = &[
     SupportPolicy {
         label: "Ubuntu",
@@ -46,7 +47,6 @@ const SUPPORT_POLICIES: &[SupportPolicy] = &[
         ]),
         architectures: X86_SBSA,
         nvidia_validated: &["22.04", "24.04", "26.04"],
-        arc_tested: &["24.04"],
     },
     SupportPolicy {
         label: "Debian",
@@ -54,19 +54,27 @@ const SUPPORT_POLICIES: &[SupportPolicy] = &[
         releases: ReleaseTargets::Major(&[(12, "debian12"), (13, "debian13")]),
         architectures: X86,
         nvidia_validated: &["12", "13"],
-        arc_tested: &["12", "13"],
     },
     SupportPolicy {
-        label: "RHEL / AlmaLinux / Rocky Linux",
-        distributions: &[
-            Distribution::Rhel,
-            Distribution::AlmaLinux,
-            Distribution::RockyLinux,
-        ],
+        label: "Red Hat Enterprise Linux",
+        distributions: &[Distribution::Rhel],
         releases: ReleaseTargets::Major(&[(8, "rhel8"), (9, "rhel9"), (10, "rhel10")]),
         architectures: X86_SBSA,
-        nvidia_validated: &["8.10", "9.7", "10.1"],
-        arc_tested: &["8.10", "9.7", "10.1"],
+        nvidia_validated: &["8.10", "9.8", "10.2"],
+    },
+    SupportPolicy {
+        label: "AlmaLinux",
+        distributions: &[Distribution::AlmaLinux],
+        releases: ReleaseTargets::Major(&[(8, "rhel8"), (9, "rhel9"), (10, "rhel10")]),
+        architectures: X86,
+        nvidia_validated: &["8.10", "9.8", "10.2"],
+    },
+    SupportPolicy {
+        label: "Rocky Linux",
+        distributions: &[Distribution::RockyLinux],
+        releases: ReleaseTargets::Major(&[(8, "rhel8"), (9, "rhel9"), (10, "rhel10")]),
+        architectures: X86,
+        nvidia_validated: &["8.10", "9.8", "10.2"],
     },
     SupportPolicy {
         label: "Oracle Linux",
@@ -74,7 +82,6 @@ const SUPPORT_POLICIES: &[SupportPolicy] = &[
         releases: ReleaseTargets::Major(&[(8, "rhel8"), (9, "rhel9")]),
         architectures: X86,
         nvidia_validated: &["8", "9"],
-        arc_tested: &["8", "9"],
     },
     SupportPolicy {
         label: "Fedora",
@@ -82,7 +89,6 @@ const SUPPORT_POLICIES: &[SupportPolicy] = &[
         releases: ReleaseTargets::Exact(&[("44", "fedora44")]),
         architectures: X86,
         nvidia_validated: &["44"],
-        arc_tested: &["44"],
     },
     SupportPolicy {
         label: "Amazon Linux",
@@ -90,7 +96,6 @@ const SUPPORT_POLICIES: &[SupportPolicy] = &[
         releases: ReleaseTargets::Major(&[(2023, "amzn2023")]),
         architectures: X86_SBSA,
         nvidia_validated: &["2023"],
-        arc_tested: &["2023"],
     },
     SupportPolicy {
         label: "Azure Linux",
@@ -98,23 +103,20 @@ const SUPPORT_POLICIES: &[SupportPolicy] = &[
         releases: ReleaseTargets::Major(&[(3, "azl3")]),
         architectures: X86_SBSA,
         nvidia_validated: &["3.0"],
-        arc_tested: &["3.0"],
     },
     SupportPolicy {
         label: "openSUSE Leap",
         distributions: &[Distribution::OpenSuse],
-        releases: ReleaseTargets::Major(&[(15, "opensuse15"), (16, "suse16")]),
+        releases: ReleaseTargets::Exact(&[("15.6", "opensuse15"), ("16.0", "suse16")]),
         architectures: X86,
-        nvidia_validated: &["15.6", "16.0"],
-        arc_tested: &["15.6", "16.0"],
+        nvidia_validated: &["15.6"],
     },
     SupportPolicy {
         label: "SLES",
         distributions: &[Distribution::Sles],
-        releases: ReleaseTargets::Major(&[(15, "sles15"), (16, "suse16")]),
+        releases: ReleaseTargets::MajorMinorAtLeast(&[(15, 6, "sles15"), (16, 0, "suse16")]),
         architectures: X86_SBSA,
         nvidia_validated: &["15.6", "15.7", "16.0"],
-        arc_tested: &["15.6", "15.7", "16.0"],
     },
     SupportPolicy {
         label: "KylinOS",
@@ -122,7 +124,6 @@ const SUPPORT_POLICIES: &[SupportPolicy] = &[
         releases: ReleaseTargets::Exact(&[("V11", "kylin11"), ("V11 2503", "kylin11")]),
         architectures: X86_SBSA,
         nvidia_validated: &["V11", "V11 2503"],
-        arc_tested: &["V11 2503"],
     },
 ];
 
@@ -132,7 +133,6 @@ pub struct NvidiaRepository {
     pub base_url: String,
     pub family: String,
     pub nvidia_validated: bool,
-    pub arc_tested: bool,
 }
 
 pub fn resolve(os: &OsInfo) -> Result<NvidiaRepository> {
@@ -147,11 +147,10 @@ pub fn resolve(os: &OsInfo) -> Result<NvidiaRepository> {
         })?;
     let distro = resolve_release_target(policy.releases, &os.version_id).ok_or_else(|| {
         anyhow::anyhow!(
-            "NVIDIA does not publish a compatible {} repository target for {}. NVIDIA-validated releases: {}; arc-tested releases: {}. Refusing to substitute another distribution family or release.",
+            "NVIDIA does not publish a compatible {} repository target for {}. NVIDIA-validated releases: {}. Refusing to substitute another distribution family or release.",
             policy.label,
             os.display_name(),
-            policy.nvidia_validated.join(", "),
-            policy.arc_tested.join(", ")
+            policy.nvidia_validated.join(", ")
         )
     })?;
     let architecture = match os.architecture.as_str() {
@@ -174,7 +173,6 @@ pub fn resolve(os: &OsInfo) -> Result<NvidiaRepository> {
         base_url,
         family: policy.label.into(),
         nvidia_validated: contains_release(policy.nvidia_validated, &os.version_id),
-        arc_tested: contains_release(policy.arc_tested, &os.version_id),
     })
 }
 
@@ -197,13 +195,29 @@ fn resolve_release_target(targets: ReleaseTargets, version: &str) -> Option<Stri
                 .find(|(candidate, _)| *candidate == major)
                 .map(|(_, target)| (*target).to_owned())
         }
+        ReleaseTargets::MajorMinorAtLeast(values) => {
+            let (major, minor) = version_major_minor(version)?;
+            values
+                .iter()
+                .find(|(candidate, minimum_minor, _)| {
+                    *candidate == major && minor >= *minimum_minor
+                })
+                .map(|(_, _, target)| (*target).to_owned())
+        }
     }
+}
+
+fn version_major_minor(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor))
 }
 
 #[cfg(test)]
 fn readme_support_table() -> String {
     let mut table = String::from(
-        "| Distribution family | Compatible repository releases | NVIDIA validated | Tested by arc | Architectures |\n| --- | --- | --- | --- | --- |\n",
+        "| Distribution family | Compatible repository releases | NVIDIA validated | Architectures |\n| --- | --- | --- | --- |\n",
     );
     for policy in SUPPORT_POLICIES {
         let compatible = match policy.releases {
@@ -217,13 +231,17 @@ fn readme_support_table() -> String {
                 .map(|(major, _)| format!("{major}.x"))
                 .collect::<Vec<_>>()
                 .join(", "),
+            ReleaseTargets::MajorMinorAtLeast(values) => values
+                .iter()
+                .map(|(major, minor, _)| format!("{major}.{minor}+"))
+                .collect::<Vec<_>>()
+                .join(", "),
         };
         table.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} |\n",
             policy.label,
             compatible,
             policy.nvidia_validated.join(", "),
-            policy.arc_tested.join(", "),
             policy.architectures.join(", ")
         ));
     }
@@ -403,18 +421,17 @@ mod tests {
             (Distribution::Debian, "12", "debian12"),
             (Distribution::Debian, "13", "debian13"),
             (Distribution::Rhel, "8.10", "rhel8"),
-            (Distribution::Rhel, "9.7", "rhel9"),
             (Distribution::Rhel, "9.8", "rhel9"),
-            (Distribution::Rhel, "10.1", "rhel10"),
-            (Distribution::RockyLinux, "10.4", "rhel10"),
-            (Distribution::RockyLinux, "9.7", "rhel9"),
-            (Distribution::AlmaLinux, "10.1", "rhel10"),
+            (Distribution::Rhel, "10.2", "rhel10"),
+            (Distribution::RockyLinux, "10.2", "rhel10"),
+            (Distribution::RockyLinux, "9.8", "rhel9"),
+            (Distribution::AlmaLinux, "10.2", "rhel10"),
             (Distribution::OracleLinux, "9", "rhel9"),
             (Distribution::Fedora, "44", "fedora44"),
             (Distribution::AmazonLinux, "2023", "amzn2023"),
             (Distribution::AzureLinux, "3.0", "azl3"),
             (Distribution::OpenSuse, "15.6", "opensuse15"),
-            (Distribution::OpenSuse, "16", "suse16"),
+            (Distribution::OpenSuse, "16.0", "suse16"),
             (Distribution::Sles, "15.7", "sles15"),
             (Distribution::Sles, "16", "suse16"),
             (Distribution::KylinOs, "V11 2503", "kylin11"),
@@ -427,15 +444,13 @@ mod tests {
     }
 
     #[test]
-    fn distinguishes_compatible_validated_and_tested_releases() {
-        let validated = resolve(&os(Distribution::Rhel, "9.7")).unwrap();
+    fn distinguishes_compatible_and_nvidia_validated_releases() {
+        let validated = resolve(&os(Distribution::Rhel, "9.8")).unwrap();
         assert!(validated.nvidia_validated);
-        assert!(validated.arc_tested);
 
-        let newer_minor = resolve(&os(Distribution::Rhel, "9.8")).unwrap();
+        let newer_minor = resolve(&os(Distribution::Rhel, "9.9")).unwrap();
         assert_eq!(newer_minor.distro, "rhel9");
         assert!(!newer_minor.nvidia_validated);
-        assert!(!newer_minor.arc_tested);
     }
 
     #[test]
@@ -446,6 +461,9 @@ mod tests {
         assert!(resolve(&os(Distribution::AmazonLinux, "2")).is_err());
         assert!(resolve(&os(Distribution::AzureLinux, "4.0")).is_err());
         assert!(resolve(&os(Distribution::Fedora, "45")).is_err());
+        assert!(resolve(&os(Distribution::OpenSuse, "15.5")).is_err());
+        assert!(resolve(&os(Distribution::OpenSuse, "15.7")).is_err());
+        assert!(resolve(&os(Distribution::Sles, "15.5")).is_err());
     }
 
     #[test]
@@ -453,6 +471,16 @@ mod tests {
         let mut debian_arm = os(Distribution::Debian, "13");
         debian_arm.architecture = "aarch64".into();
         assert!(resolve(&debian_arm).is_err());
+
+        for distribution in [Distribution::AlmaLinux, Distribution::RockyLinux] {
+            let mut derivative_arm = os(distribution, "9.8");
+            derivative_arm.architecture = "aarch64".into();
+            assert!(resolve(&derivative_arm).is_err());
+        }
+
+        let mut rhel_arm = os(Distribution::Rhel, "9.8");
+        rhel_arm.architecture = "aarch64".into();
+        assert_eq!(resolve(&rhel_arm).unwrap().distro, "rhel9");
 
         let mut ubuntu_arm = os(Distribution::Ubuntu, "24.04");
         ubuntu_arm.architecture = "aarch64".into();
@@ -468,10 +496,10 @@ mod tests {
             (Distribution::Ubuntu, "24.04", "x86_64"),
             (Distribution::Ubuntu, "24.04", "aarch64"),
             (Distribution::Debian, "13", "x86_64"),
-            (Distribution::Rhel, "9.7", "x86_64"),
-            (Distribution::Rhel, "9.7", "aarch64"),
-            (Distribution::AlmaLinux, "9.7", "x86_64"),
-            (Distribution::RockyLinux, "9.7", "x86_64"),
+            (Distribution::Rhel, "9.8", "x86_64"),
+            (Distribution::Rhel, "9.8", "aarch64"),
+            (Distribution::AlmaLinux, "9.8", "x86_64"),
+            (Distribution::RockyLinux, "9.8", "x86_64"),
             (Distribution::OracleLinux, "9", "x86_64"),
             (Distribution::Fedora, "44", "x86_64"),
             (Distribution::AmazonLinux, "2023", "x86_64"),

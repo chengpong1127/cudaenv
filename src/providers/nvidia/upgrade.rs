@@ -573,14 +573,13 @@ pub fn build_plan(
             PlanDetail::new(
                 "Release validation",
                 format!(
-                    "repository-compatible {}; NVIDIA validated: {}; arc tested: {}",
+                    "repository-compatible {}; NVIDIA validated: {}",
                     repository.family,
                     if repository.nvidia_validated {
                         "yes"
                     } else {
                         "no"
-                    },
-                    if repository.arc_tested { "yes" } else { "no" }
+                    }
                 ),
             ),
             PlanDetail::new(

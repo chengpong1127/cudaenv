@@ -16,7 +16,15 @@ use crate::model::{
 };
 
 pub fn normalize_for_current_user(plan: &mut OperationPlan) {
-    if !running_as_root() {
+    normalize_for_user(plan, running_as_root());
+}
+
+/// Normalize privileged commands for an explicitly described execution user.
+///
+/// Keeping this transformation separate from user detection makes the command
+/// policy deterministic and directly testable.
+pub fn normalize_for_user(plan: &mut OperationPlan, running_as_root: bool) {
+    if !running_as_root {
         return;
     }
     for step in &mut plan.steps {
@@ -187,7 +195,8 @@ pub fn execute_plan<'a>(
     execute_plan_in(runner, plan, verbose, None, report)
 }
 
-fn execute_plan_in<'a>(
+#[doc(hidden)]
+pub fn execute_plan_in<'a>(
     runner: &impl CommandRunner,
     plan: &'a OperationPlan,
     verbose: bool,

@@ -11,7 +11,7 @@ mod inspect;
 mod planner;
 
 pub use decision::InstallDecision;
-pub use inspect::InstallContext;
+pub use inspect::{InstallContext, InstallSystem, RealInstallSystem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstallOptions {
@@ -25,4 +25,16 @@ pub fn plan(os: &OsInfo, options: &InstallOptions) -> Result<OperationPlan> {
     let context = InstallContext::inspect(os)?;
     let decision = InstallDecision::decide(&context, options)?;
     planner::plan(&context, &decision, options)
+}
+
+/// Plan from already-collected evidence.
+///
+/// This is the deterministic Decide → Plan seam used by tests and other
+/// callers that collect inspection evidence outside this crate.
+pub fn plan_from_context(
+    context: &InstallContext,
+    options: &InstallOptions,
+) -> Result<OperationPlan> {
+    let decision = InstallDecision::decide(context, options)?;
+    planner::plan(context, &decision, options)
 }

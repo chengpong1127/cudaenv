@@ -187,12 +187,10 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
         vec![FixId::InspectHardware],
     )];
     let release_warning = repository_state.as_ref().ok().and_then(|repository| {
-        (!repository.nvidia_validated || !repository.arc_tested).then(|| {
+        (!repository.nvidia_validated).then(|| {
             format!(
-                "Repository-compatible via {}, but this exact release is{} NVIDIA-validated and{} explicitly tested by arc.",
-                repository.distro,
-                if repository.nvidia_validated { "" } else { " not" },
-                if repository.arc_tested { "" } else { " not" }
+                "Repository-compatible via {}, but this exact release is not NVIDIA-validated.",
+                repository.distro
             )
         })
     });
@@ -218,11 +216,10 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
                 |_| "repository target: unavailable".into(),
                 |repository| {
                     format!(
-                        "repository target: {}; family: {}; NVIDIA validated: {}; arc tested: {}",
+                        "repository target: {}; family: {}; NVIDIA validated: {}",
                         repository.distro,
                         repository.family,
-                        yes_no(repository.nvidia_validated),
-                        yes_no(repository.arc_tested)
+                        yes_no(repository.nvidia_validated)
                     )
                 },
             ),
@@ -1010,6 +1007,42 @@ mod tests {
             cuda_symlink: CudaSymlinkState::Missing,
             installed_cuda_versions: vec![],
         }
+    }
+
+    #[test]
+    fn nvidia_validated_release_passes_without_arc_coverage_evidence() {
+        let mut e = evidence();
+        e.os.version_id = "22.04".into();
+        let checks = checks(&e, DoctorProfile::ModelTraining);
+        let os = checks
+            .iter()
+            .find(|check| check.id == DiagnosticId::OperatingSystem)
+            .unwrap();
+
+        assert_eq!(os.status, DiagnosticStatus::Pass);
+        assert!(os.problem.is_none());
+        assert!(os.evidence.iter().all(|line| !line.contains("arc")));
+    }
+
+    #[test]
+    fn repository_compatible_but_unvalidated_release_still_warns() {
+        let mut e = evidence();
+        e.os.distribution = Distribution::Rhel;
+        e.os.name = "RHEL".into();
+        e.os.version_id = "9.9".into();
+        let checks = checks(&e, DoctorProfile::ModelTraining);
+        let os = checks
+            .iter()
+            .find(|check| check.id == DiagnosticId::OperatingSystem)
+            .unwrap();
+
+        assert_eq!(os.status, DiagnosticStatus::Warning);
+        assert_eq!(
+            os.problem.as_deref(),
+            Some(
+                "Repository-compatible via rhel9, but this exact release is not NVIDIA-validated."
+            )
+        );
     }
     #[test]
     fn missing_toolkit_is_profile_aware() {
