@@ -3,12 +3,14 @@ use std::fmt::Write;
 use console::style;
 
 use crate::model::{
-    environment::{DiagnosticSection, DiagnosticStatus, Diagnostics, ProviderStatus},
+    environment::{
+        DiagnosticSection, DiagnosticStatus, Diagnostics, DriverFlavorState, DriverInstallation,
+        DriverPackageScope, ProviderStatus,
+    },
     operation::OperationPlan,
     system::OsInfo,
 };
 use crate::platform::command::ExecutionEvent;
-use crate::providers::nvidia::upgrade::AvailableUpgrades;
 
 pub fn operation_plan(plan: &OperationPlan) {
     print!("{}", format_operation_plan(plan));
@@ -179,62 +181,205 @@ fn section_label(label: &str) -> String {
     style(label.to_uppercase()).cyan().bold().to_string()
 }
 
-pub fn system_status(
-    os: &OsInfo,
-    providers: &[ProviderStatus],
-    upgrades: Option<&AvailableUpgrades>,
-) {
-    println!("GPU Environment\n");
-    println!("OS:\n{}", os.display_name());
+pub fn system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: bool) {
+    print!("{}", format_system_status(os, providers, verbose));
+}
+
+pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: bool) -> String {
+    let mut rendered = String::from("GPU Environment\n\n");
+    status_row(&mut rendered, "OS", &os.display_name());
     for status in providers {
-        println!("\n{} GPU(s):", status.vendor);
-        if status.devices.is_empty() {
-            println!("Not detected");
-        } else {
-            for device in &status.devices {
-                println!("{}", device.name);
-            }
-        }
-        println!(
-            "\n{} Driver package:\n{}",
-            status.vendor,
-            status.driver.description()
+        status_row(&mut rendered, "GPU", &grouped_devices(status));
+        status_row(
+            &mut rendered,
+            "Driver installation",
+            &driver_installation_label(&status.driver),
         );
-        if let Some(version) = upgrades.and_then(|value| value.driver.as_deref()) {
-            println!("Available: {version}");
-        }
-        println!(
-            "\n{} Driver runtime:\n{}",
-            status.vendor,
+        status_row(
+            &mut rendered,
+            "Driver version",
             status
                 .driver_version
                 .as_deref()
-                .unwrap_or("Not loaded or not operational")
+                .or_else(|| status.driver_module.as_ref()?.version.as_deref())
+                .unwrap_or("Not detected"),
         );
-        for toolkit in &status.toolkits {
-            println!(
-                "\n{}:\n{}\nPackages: {}\nManageable by arc: {}",
-                toolkit.name,
-                toolkit.version.as_deref().unwrap_or("version unknown"),
-                toolkit.packages.join(", "),
-                if toolkit.manageable { "yes" } else { "no" }
+        status_row(
+            &mut rendered,
+            "Driver runtime",
+            if status.driver_runtime_operational {
+                "Operational"
+            } else {
+                "Not operational"
+            },
+        );
+        status_row(
+            &mut rendered,
+            "CUDA Toolkit",
+            status
+                .toolkits
+                .first()
+                .and_then(|toolkit| toolkit.version.as_deref())
+                .or_else(|| (!status.toolkits.is_empty()).then_some("Installed"))
+                .unwrap_or("Not installed"),
+        );
+        status_row(
+            &mut rendered,
+            "nvcc",
+            status
+                .active_toolkit
+                .as_ref()
+                .and_then(|toolkit| toolkit.version.as_deref())
+                .unwrap_or("Not found"),
+        );
+
+        if verbose {
+            writeln!(rendered, "\nTechnical details").unwrap();
+            technical_row(
+                &mut rendered,
+                "Kernel version",
+                status.kernel_version.as_deref().unwrap_or("Unknown"),
             );
-            if let Some(version) = upgrades.and_then(|value| value.toolkit.as_deref()) {
-                println!("Available compatible version: {version}");
-            }
-        }
-        if status.toolkits.is_empty() {
-            println!("\nSystem-managed CUDA Toolkit:\nNot installed");
-        }
-        if let Some(active) = &status.active_toolkit {
-            println!(
-                "\nActive nvcc (informational):\n{}\nPath: {}\nManaged by arc: no",
-                active.version.as_deref().unwrap_or("version unknown"),
-                active.executable_path.as_deref().unwrap_or("unknown")
+            technical_row(
+                &mut rendered,
+                "Module path",
+                status
+                    .driver_module
+                    .as_ref()
+                    .and_then(|module| module.path.as_deref())
+                    .unwrap_or("Not found"),
             );
+            technical_row(
+                &mut rendered,
+                "Kernel module version",
+                status
+                    .driver_module
+                    .as_ref()
+                    .and_then(|module| module.version.as_deref())
+                    .unwrap_or("Not detected"),
+            );
+            technical_row(
+                &mut rendered,
+                "Driver package scope",
+                driver_package_scope(&status.driver),
+            );
+            technical_row(
+                &mut rendered,
+                "Secure Boot",
+                status.secure_boot_enabled.map_or("Unknown", |enabled| {
+                    if enabled { "Enabled" } else { "Disabled" }
+                }),
+            );
+            technical_row(
+                &mut rendered,
+                "Secure Boot signature",
+                &module_signature(status),
+            );
+        }
+
+        if !matches!(status.driver, DriverInstallation::Missing)
+            && !status.driver_runtime_operational
+        {
+            writeln!(
+                rendered,
+                "\n⚠ The NVIDIA driver is installed but not currently operational.\n  Run `arc doctor` for diagnostics."
+            )
+            .unwrap();
+        }
+    }
+    rendered
+}
+
+fn status_row(rendered: &mut String, label: &str, value: &str) {
+    writeln!(rendered, "{label:<20}{value}").unwrap();
+}
+
+fn technical_row(rendered: &mut String, label: &str, value: &str) {
+    writeln!(rendered, "{label:<24}{value}").unwrap();
+}
+
+fn grouped_devices(status: &ProviderStatus) -> String {
+    if status.devices.is_empty() {
+        return "Not detected".into();
+    }
+    let mut groups: Vec<(String, usize)> = Vec::new();
+    for device in &status.devices {
+        let name = friendly_gpu_name(&device.name);
+        if let Some((_, count)) = groups.iter_mut().find(|(existing, _)| *existing == name) {
+            *count += 1;
         } else {
-            println!("\nActive nvcc (informational):\nNot found on PATH");
+            groups.push((name, 1));
         }
+    }
+    groups
+        .into_iter()
+        .map(|(name, count)| {
+            if count == 1 {
+                name
+            } else {
+                format!("{count} × {name}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn friendly_gpu_name(name: &str) -> String {
+    let model = name
+        .split('[')
+        .skip(1)
+        .filter_map(|suffix| suffix.split_once(']').map(|(value, _)| value))
+        .filter(|value| !value.contains(':'))
+        .last()
+        .unwrap_or(name)
+        .trim();
+    if model.starts_with("NVIDIA ") {
+        model.to_owned()
+    } else {
+        format!("NVIDIA {model}")
+    }
+}
+
+fn driver_installation_label(driver: &DriverInstallation) -> String {
+    let flavor = |value| match value {
+        DriverFlavorState::Open => "Open",
+        DriverFlavorState::Proprietary => "Proprietary",
+        DriverFlavorState::Mixed => "Mixed",
+    };
+    match driver {
+        DriverInstallation::Missing => "Not installed".into(),
+        DriverInstallation::Managed { flavor: value, .. } => {
+            format!("Managed · {}", flavor(*value))
+        }
+        DriverInstallation::BrokenManaged { flavor: value, .. } => {
+            format!("Managed · {} · Needs repair", flavor(*value))
+        }
+        DriverInstallation::Unmanaged { .. } => "Unmanaged".into(),
+    }
+}
+
+fn driver_package_scope(driver: &DriverInstallation) -> &'static str {
+    match driver {
+        DriverInstallation::Managed { scope, .. } => match scope {
+            DriverPackageScope::Full => "Full",
+            DriverPackageScope::ComputeOnly => "Compute only",
+            DriverPackageScope::DesktopOnly => "Desktop only",
+        },
+        DriverInstallation::BrokenManaged { .. } => "Incomplete",
+        DriverInstallation::Unmanaged { .. } => "Unmanaged",
+        DriverInstallation::Missing => "Not installed",
+    }
+}
+
+fn module_signature(status: &ProviderStatus) -> String {
+    let Some(module) = &status.driver_module else {
+        return "Unknown".into();
+    };
+    match (&module.signature_id, &module.signer) {
+        (Some(id), Some(signer)) => format!("Signed · {id} · {signer}"),
+        (Some(id), None) => format!("Signed · {id}"),
+        (None, Some(signer)) => format!("Signed · {signer}"),
+        (None, None) => "Unsigned or unknown".into(),
     }
 }
 
@@ -330,11 +475,13 @@ mod tests {
     use super::*;
     use crate::model::{
         command::CommandSpec,
-        device::GpuVendor,
+        device::{GpuDevice, GpuVendor},
         environment::{
-            DiagnosticCheck, DiagnosticId, DiagnosticSection, DiagnosticStatus, FixPlan,
+            DiagnosticCheck, DiagnosticId, DiagnosticSection, DiagnosticStatus, DriverFlavorState,
+            DriverInstallation, DriverModuleInfo, DriverPackageScope, FixPlan,
         },
         operation::{OperationPlan, PlanDetail, PlanStep},
+        system::{Distribution, OsInfo},
     };
 
     #[test]
@@ -405,6 +552,98 @@ mod tests {
                 output.contains(expected),
                 "missing {expected:?} in {output}"
             );
+        }
+    }
+
+    #[test]
+    fn status_is_compact_groups_duplicate_gpus_and_warns_on_inactive_driver() {
+        let os = OsInfo {
+            distribution: Distribution::Ubuntu,
+            name: "Ubuntu".into(),
+            version_id: "22.04".into(),
+            architecture: "x86_64".into(),
+            is_wsl: false,
+        };
+        let status = sample_status();
+        let output = format_system_status(&os, &[status], false);
+
+        for expected in [
+            "GPU Environment",
+            "OS                  Ubuntu 22.04",
+            "GPU                 2 × NVIDIA GeForce RTX 2080",
+            "Driver installation Managed · Open",
+            "Driver version      610.43.02",
+            "Driver runtime      Not operational",
+            "CUDA Toolkit        Not installed",
+            "nvcc                Not found",
+            "Run `arc doctor` for diagnostics.",
+        ] {
+            assert!(
+                output.contains(expected),
+                "missing {expected:?} in {output}"
+            );
+        }
+        assert_eq!(output.matches("NVIDIA GeForce RTX 2080").count(), 1);
+        assert!(!output.contains("Driver package scope"));
+        assert!(!output.contains("/lib/modules"));
+    }
+
+    #[test]
+    fn verbose_status_adds_selected_technical_details_not_raw_modinfo() {
+        let os = OsInfo {
+            distribution: Distribution::Ubuntu,
+            name: "Ubuntu".into(),
+            version_id: "22.04".into(),
+            architecture: "x86_64".into(),
+            is_wsl: false,
+        };
+        let output = format_system_status(&os, &[sample_status()], true);
+
+        for expected in [
+            "Technical details",
+            "Kernel version          6.8.0-test",
+            "Module path             /lib/modules/test/nvidia.ko",
+            "Kernel module version   610.43.02",
+            "Driver package scope    Full",
+            "Secure Boot             Enabled",
+            "Secure Boot signature   Signed · PKCS#7 · Test key",
+        ] {
+            assert!(
+                output.contains(expected),
+                "missing {expected:?} in {output}"
+            );
+        }
+        assert!(!output.contains("alias:"));
+        assert!(!output.contains("depends:"));
+    }
+
+    fn sample_status() -> ProviderStatus {
+        let device = || GpuDevice {
+            vendor: GpuVendor::Nvidia,
+            name: "NVIDIA Corporation TU104 [GeForce RTX 2080] [10de:1e87]".into(),
+            pci_device_id: Some(0x1e87),
+        };
+        ProviderStatus {
+            vendor: GpuVendor::Nvidia,
+            devices: vec![device(), device()],
+            driver: DriverInstallation::Managed {
+                flavor: DriverFlavorState::Open,
+                scope: DriverPackageScope::Full,
+                branch: Some(610),
+                packages: vec!["nvidia-driver-610-open".into()],
+            },
+            driver_version: None,
+            driver_runtime_operational: false,
+            driver_module: Some(DriverModuleInfo {
+                path: Some("/lib/modules/test/nvidia.ko".into()),
+                version: Some("610.43.02".into()),
+                signer: Some("Test key".into()),
+                signature_id: Some("PKCS#7".into()),
+            }),
+            kernel_version: Some("6.8.0-test".into()),
+            secure_boot_enabled: Some(true),
+            toolkits: vec![],
+            active_toolkit: None,
         }
     }
 

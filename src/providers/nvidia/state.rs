@@ -14,10 +14,11 @@ use super::{driver, gpu, toolkit};
 
 pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
     let devices = gpu::detect()?;
-    let driver_version = driver::detect_version()?;
+    let driver_inspection = driver::inspect()?;
+    let driver_version = driver_inspection.runtime_version.clone();
     let packages = installed_packages(os)?;
-    let module_loaded = Path::new("/sys/module/nvidia").exists();
-    let module_metadata_available = driver::module_metadata_available();
+    let module_loaded = driver_inspection.module_loaded;
+    let module_metadata_available = driver_inspection.module_info.is_some();
     let runfile_uninstaller = Path::new("/usr/bin/nvidia-uninstall").exists();
     let installer_log = Path::new("/var/log/nvidia-installer.log").exists();
     let driver = classify_driver(
@@ -35,6 +36,10 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
         devices: devices.into_iter().map(Into::into).collect(),
         driver,
         driver_version,
+        driver_runtime_operational: driver_inspection.runtime_operational,
+        driver_module: driver_inspection.module_info,
+        kernel_version: driver_inspection.kernel_version,
+        secure_boot_enabled: driver_inspection.secure_boot_enabled,
         toolkits,
         active_toolkit,
     })

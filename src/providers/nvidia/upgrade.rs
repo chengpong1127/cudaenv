@@ -90,12 +90,6 @@ pub struct ToolkitCandidate {
     pub package_version: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AvailableUpgrades {
-    pub driver: Option<String>,
-    pub toolkit: Option<String>,
-}
-
 /// Boundary used by both the real planner and deterministic tests. Implementors
 /// return package-manager versions verbatim; the planner compares them safely.
 pub trait PackageQuery {
@@ -227,50 +221,6 @@ pub fn plan(os: &OsInfo, options: &UpgradeOptions) -> Result<OperationPlan> {
     let query = SystemPackageQuery;
     let current = detect_state(os, &packages, &query)?;
     build_plan(os, options, &gpus, &current, &query)
-}
-
-/// Best-effort, read-only availability lookup for `status`. An empty result is
-/// deliberately not a claim that the installed components are current.
-pub fn availability(os: &OsInfo) -> Result<AvailableUpgrades> {
-    let gpus = gpu::detect()?;
-    validate_gpus(os, &gpus)?;
-    let packages = state::installed_packages(os)?;
-    let query = SystemPackageQuery;
-    let current = detect_state(os, &packages, &query)?;
-    if !current.repository_configured {
-        return Ok(AvailableUpgrades::default());
-    }
-    let legacy = gpus
-        .iter()
-        .any(|gpu| gpu.generation == Generation::MaxwellPascalVolta);
-    validate_driver_manageability(&current)?;
-    let driver = current.driver_package.as_ref().and_then(|package| {
-        package
-            .candidate
-            .as_ref()
-            .filter(|candidate| version_cmp(candidate, &package.installed) == Ordering::Greater)
-            .map(|candidate| {
-                upstream_driver_version(candidate)
-                    .unwrap_or(candidate)
-                    .to_owned()
-            })
-    });
-    let resulting_driver = driver
-        .as_deref()
-        .or(current.status.driver_version.as_deref());
-    let toolkit = if current.toolkits.is_empty() {
-        None
-    } else {
-        resolve_toolkit_candidate(os.package_manager(), &current.toolkits, legacy, &query)?
-            .filter(|candidate| {
-                resulting_driver.is_some_and(|driver| {
-                    compatibility::evaluate(driver, &candidate.version)
-                        != Some(compatibility::Compatibility::Incompatible)
-                })
-            })
-            .map(|candidate| candidate.version)
-    };
-    Ok(AvailableUpgrades { driver, toolkit })
 }
 
 pub fn detect_state(
@@ -1066,6 +1016,10 @@ mod tests {
                 devices: vec![gpu(Generation::TuringOrNewer).into()],
                 driver: installation,
                 driver_version: driver.then(|| "580.65.06".into()),
+                driver_runtime_operational: driver,
+                driver_module: None,
+                kernel_version: None,
+                secure_boot_enabled: None,
                 toolkits: vec![],
                 active_toolkit: None,
             },

@@ -391,6 +391,10 @@ mod tests {
             devices: vec![],
             driver,
             driver_version: Some("580.65.06".into()),
+            driver_runtime_operational: true,
+            driver_module: None,
+            kernel_version: None,
+            secure_boot_enabled: None,
             toolkits: toolkit_version
                 .map(|v| ToolkitStatus {
                     name: "System-managed CUDA Toolkit".into(),

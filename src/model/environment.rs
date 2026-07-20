@@ -27,10 +27,22 @@ pub struct ProviderStatus {
     pub devices: Vec<GpuDevice>,
     pub driver: DriverInstallation,
     pub driver_version: Option<String>,
+    pub driver_runtime_operational: bool,
+    pub driver_module: Option<DriverModuleInfo>,
+    pub kernel_version: Option<String>,
+    pub secure_boot_enabled: Option<bool>,
     /// Toolkit installations proven by the system package-manager inventory.
     pub toolkits: Vec<ToolkitStatus>,
     /// The nvcc selected by PATH, which may be Conda-, module-, or user-managed.
     pub active_toolkit: Option<ToolkitStatus>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DriverModuleInfo {
+    pub path: Option<String>,
+    pub version: Option<String>,
+    pub signer: Option<String>,
+    pub signature_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

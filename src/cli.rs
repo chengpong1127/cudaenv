@@ -13,13 +13,20 @@ pub enum Command {
     /// Install for model training or CUDA development.
     Install(InstallArgs),
     /// Display the current GPU environment.
-    Status,
+    Status(StatusArgs),
     /// Upgrade installed NVIDIA components to their latest compatible versions.
     Upgrade(UpgradeArgs),
     /// Diagnose common GPU driver problems.
     Doctor(DoctorArgs),
     /// Plan and remove CUDA Toolkit and NVIDIA driver packages on Ubuntu.
     Uninstall(UninstallArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct StatusArgs {
+    /// Show technical driver and kernel details.
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
 }
 
 #[derive(Args, Debug)]
@@ -94,4 +101,21 @@ pub struct UninstallArgs {
     /// Do not ask for final confirmation.
     #[arg(long, short = 'y')]
     pub yes: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn status_accepts_short_and_long_verbose_flags() {
+        for flag in ["-v", "--verbose"] {
+            let cli = Cli::try_parse_from(["arc", "status", flag]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::Status(StatusArgs { verbose: true })
+            ));
+        }
+    }
 }

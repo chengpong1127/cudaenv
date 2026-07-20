@@ -29,7 +29,7 @@ pub const EXECUTION_FAILURE_EXIT_CODE: u8 = 2;
 pub fn run(cli: Cli) -> Result<ExitStatus> {
     match cli.command {
         Command::Install(args) => commands::install::run(args).map(|_| ExitStatus::Success),
-        Command::Status => commands::status::run().map(|_| ExitStatus::Success),
+        Command::Status(args) => commands::status::run(args).map(|_| ExitStatus::Success),
         Command::Upgrade(args) => commands::upgrade::run(args).map(|outcome| match outcome {
             commands::upgrade::UpgradeOutcome::Success => ExitStatus::Success,
             commands::upgrade::UpgradeOutcome::Unavailable => ExitStatus::UpgradeUnavailable,

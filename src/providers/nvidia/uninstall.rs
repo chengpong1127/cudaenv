@@ -157,6 +157,10 @@ mod tests {
             devices: vec![],
             driver: managed(),
             driver_version: Some("570".into()),
+            driver_runtime_operational: true,
+            driver_module: None,
+            kernel_version: None,
+            secure_boot_enabled: None,
             toolkits: vec![ToolkitStatus {
                 name: "System-managed CUDA Toolkit".into(),
                 version: Some("13.1".into()),
@@ -188,6 +192,10 @@ mod tests {
             devices: vec![],
             driver: DriverInstallation::Missing,
             driver_version: None,
+            driver_runtime_operational: false,
+            driver_module: None,
+            kernel_version: None,
+            secure_boot_enabled: None,
             toolkits: vec![ToolkitStatus {
                 name: "System-managed CUDA Toolkit".into(),
                 version: Some("13.1".into()),
