@@ -56,8 +56,8 @@ pub enum UsageProfile {
 impl UsageProfile {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ModelTraining => "Model training     PyTorch, TensorFlow, or JAX",
-            Self::CudaDevelopment => "CUDA development   Native CUDA apps and custom kernels",
+            Self::ModelTraining => "AI Model Training       PyTorch, TensorFlow, or JAX",
+            Self::CudaDevelopment => "CUDA Development        Native CUDA apps and custom kernels",
         }
     }
 }

@@ -59,6 +59,8 @@ pub struct NvidiaEvidence {
     pub kernel_release: String,
     pub matching_kernel_headers: bool,
     pub secure_boot_enabled: Option<bool>,
+    pub dkms_mok_key: Option<PathBuf>,
+    pub dkms_mok_key_enrolled: Option<bool>,
     pub dkms_status: Option<String>,
     pub driver_version: Option<String>,
     pub toolkit_packages: Vec<String>,
@@ -91,6 +93,14 @@ pub fn collect_evidence() -> Result<NvidiaEvidence> {
         nvcc = command_evidence("/usr/local/cuda/bin/nvcc", &["--version"]);
     }
     let installed_cuda_versions = installed_cuda_versions();
+    let secure_boot_enabled = driver::secure_boot_enabled();
+    let dkms_mok_key = secure_boot_enabled
+        .is_some_and(|enabled| enabled)
+        .then(dkms_mok_key)
+        .flatten();
+    let dkms_mok_key_enrolled = dkms_mok_key
+        .as_deref()
+        .and_then(mok_key_enrolled);
     let managed = status.toolkits.first();
     let managed_nvcc = managed
         .and_then(|toolkit| toolkit.executable_path.as_deref())
@@ -104,7 +114,9 @@ pub fn collect_evidence() -> Result<NvidiaEvidence> {
             .join(&kernel_release)
             .join("build")
             .exists(),
-        secure_boot_enabled: driver::secure_boot_enabled(),
+        secure_boot_enabled,
+        dkms_mok_key,
+        dkms_mok_key_enrolled,
         dkms_status: command_optional_stdout("dkms", &["status"]),
         driver_version: status.driver_version,
         toolkit_packages: managed
@@ -220,27 +232,55 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
         vec![],
     ));
     result.push(check(DiagnosticId::KernelHeaders, DiagnosticSection::OperatingSystem, "Headers for the running kernel", if e.matching_kernel_headers { DiagnosticStatus::Pass } else { DiagnosticStatus::Warning }, vec![format!("kernel {}: headers {}", e.kernel_release, yes_no(e.matching_kernel_headers))], (!e.matching_kernel_headers).then(|| "Matching kernel development packages must be installed before DKMS builds the driver.".into()), vec![], vec![FixId::InstallKernelHeaders]));
+    let secure_boot_key_problem = e.secure_boot_enabled == Some(true)
+        && e.dkms_mok_key_enrolled == Some(false)
+        && !e.nvidia_module_loaded
+        && matches!(e.driver, DriverInstallation::Managed { .. });
+    let mut secure_boot_evidence = vec![format!(
+        "Secure Boot: {}",
+        match e.secure_boot_enabled {
+            Some(true) => "enabled",
+            Some(false) => "disabled",
+            None => "unknown",
+        }
+    )];
+    if let Some(key) = &e.dkms_mok_key {
+        secure_boot_evidence.push(format!(
+            "DKMS signing key {}: {}",
+            key.display(),
+            match e.dkms_mok_key_enrolled {
+                Some(true) => "enrolled",
+                Some(false) => "not enrolled",
+                None => "enrollment unknown",
+            }
+        ));
+    }
     result.push(check(
         DiagnosticId::SecureBoot,
         DiagnosticSection::OperatingSystem,
         "Secure Boot state",
-        match e.secure_boot_enabled {
-            Some(false) => DiagnosticStatus::Pass,
-            _ => DiagnosticStatus::Warning,
-        },
-        vec![format!(
-            "Secure Boot: {}",
+        if secure_boot_key_problem {
+            DiagnosticStatus::Error
+        } else {
             match e.secure_boot_enabled {
-                Some(true) => "enabled",
-                Some(false) => "disabled",
-                None => "unknown",
+                Some(false) => DiagnosticStatus::Pass,
+                _ => DiagnosticStatus::Warning,
             }
-        )],
-        e.secure_boot_enabled
-            .is_none()
-            .then(|| "Secure Boot state could not be determined.".into()),
+        },
+        secure_boot_evidence,
+        if secure_boot_key_problem {
+            Some("Secure Boot does not trust the local DKMS module-signing key.".into())
+        } else {
+            e.secure_boot_enabled
+                .is_none()
+                .then(|| "Secure Boot state could not be determined.".into())
+        },
         vec![],
-        vec![],
+        if secure_boot_key_problem {
+            vec![FixId::EnrollModuleKey, FixId::RebuildDkms, FixId::Reboot]
+        } else {
+            vec![]
+        },
     ));
     let (driver_status, driver_problem) = match &e.driver {
         DriverInstallation::Managed { .. } => (DiagnosticStatus::Pass, None),
@@ -513,6 +553,53 @@ pub fn fix_plan(
             ],
         ));
     }
+    let secure_boot_blocks_module = e.secure_boot_enabled == Some(true)
+        && e.dkms_mok_key_enrolled == Some(false)
+        && !e.nvidia_module_loaded
+        && matches!(e.driver, DriverInstallation::Managed { .. });
+    if matches!(e.driver, DriverInstallation::Managed { .. }) && secure_boot_blocks_module {
+        causes.push(DiagnosticCause {
+            title: "Secure Boot does not trust the NVIDIA DKMS module-signing key".into(),
+            confidence: Confidence::High,
+            evidence: vec![format!(
+                "{} is not enrolled",
+                e.dkms_mok_key
+                    .as_deref()
+                    .map_or_else(
+                        || "the DKMS signing key".into(),
+                        |path| path.display().to_string(),
+                    )
+            )],
+            fixes: vec![FixId::EnrollModuleKey, FixId::RebuildDkms, FixId::Reboot],
+        });
+    }
+    if matches!(e.driver, DriverInstallation::Managed { .. })
+        && failed(DiagnosticId::DriverModule)
+        && e.matching_kernel_headers
+        && !secure_boot_blocks_module
+    {
+        causes.push(DiagnosticCause {
+            title: "The installed NVIDIA kernel module is not active for the running kernel"
+                .into(),
+            confidence: Confidence::High,
+            evidence: vec![
+                format!("running kernel: {}", e.kernel_release),
+                format!(
+                    "DKMS: {}",
+                    e.dkms_status.as_deref().unwrap_or("unavailable")
+                ),
+                format!(
+                    "Secure Boot: {}",
+                    match e.secure_boot_enabled {
+                        Some(true) => "enabled",
+                        Some(false) => "disabled",
+                        None => "unknown",
+                    }
+                ),
+            ],
+            fixes: vec![FixId::DebugDriver, FixId::Reboot],
+        });
+    }
     if version_mismatch(e) && matches!(e.driver, DriverInstallation::Managed { .. }) {
         causes.push(cause(
             "NVIDIA driver and userspace libraries do not match",
@@ -603,6 +690,26 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
             repair_commands,
             20,
         ),
+        fix_with_manual(
+            FixId::EnrollModuleKey,
+            "Enroll the DKMS signing key with Secure Boot",
+            e.dkms_mok_key
+                .as_deref()
+                .map(|key| {
+                    CommandSpec::sudo(
+                        "mokutil",
+                        vec!["--import".to_owned(), key.display().to_string()],
+                    )
+                })
+                .into_iter()
+                .collect(),
+            vec![
+                "Set a one-time enrollment password when mokutil prompts.".into(),
+                "During the next boot, choose Enroll MOK, confirm the key, and enter that password."
+                    .into(),
+            ],
+            35,
+        ),
         fix(
             FixId::UpgradeDriver,
             "Upgrade the managed NVIDIA driver",
@@ -621,10 +728,14 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
         fix(
             FixId::RebuildDkms,
             "Rebuild NVIDIA DKMS modules",
-            vec![CommandSpec::sudo(
-                "dkms",
-                ["autoinstall", "-k", &e.kernel_release],
-            )],
+            vec![if e.dkms_mok_key_enrolled == Some(false) {
+                CommandSpec::sudo(
+                    "dkms",
+                    ["autoinstall", "--force", "-k", &e.kernel_release],
+                )
+            } else {
+                CommandSpec::sudo("dkms", ["autoinstall", "-k", &e.kernel_release])
+            }],
             40,
         ),
         fix(
@@ -663,7 +774,7 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
         ),
         fix(
             FixId::Reboot,
-            "Reboot to load the repaired driver",
+            "Reboot to load the NVIDIA driver",
             vec![CommandSpec::sudo("systemctl", ["reboot"])],
             90,
         ),
@@ -753,6 +864,41 @@ fn command_evidence(program: &str, args: &[&str]) -> CommandEvidence {
             stderr: error.to_string(),
             ..Default::default()
         },
+    }
+}
+
+fn dkms_mok_key() -> Option<PathBuf> {
+    [
+        "/var/lib/shim-signed/mok/MOK.der",
+        "/var/lib/dkms/mok.der",
+        "/var/lib/dkms/mok.pub",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.is_file())
+}
+
+fn mok_key_enrolled(key: &Path) -> Option<bool> {
+    let output = Command::new("mokutil")
+        .arg("--test-key")
+        .arg(key)
+        .output()
+        .ok()?;
+    parse_mok_key_enrollment(
+        output.status.success(),
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+fn parse_mok_key_enrollment(succeeded: bool, stdout: &str, stderr: &str) -> Option<bool> {
+    let message = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    if message.contains("not enrolled") {
+        Some(false)
+    } else if succeeded {
+        Some(true)
+    } else {
+        None
     }
 }
 fn command_stdout(program: &str, args: &[&str]) -> Result<String> {
@@ -890,6 +1036,8 @@ mod tests {
             kernel_release: "6.8.0-generic".into(),
             matching_kernel_headers: true,
             secure_boot_enabled: Some(false),
+            dkms_mok_key: None,
+            dkms_mok_key_enrolled: None,
             dkms_status: None,
             driver_version: Some("570.26".into()),
             toolkit_packages: vec![],
@@ -914,6 +1062,22 @@ mod tests {
             diagnose(e, DoctorProfile::CudaDevelopment)
                 .unwrap()
                 .has_errors()
+        );
+    }
+
+    #[test]
+    fn mokutil_not_enrolled_message_wins_over_its_success_exit_status() {
+        assert_eq!(
+            parse_mok_key_enrollment(
+                true,
+                "",
+                "/var/lib/shim-signed/mok/MOK.der is not enrolled",
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            parse_mok_key_enrollment(true, "MOK.der is already enrolled", ""),
+            Some(true)
         );
     }
     #[test]
@@ -1011,6 +1175,75 @@ mod tests {
                 .iter()
                 .all(|fix| { !fix.commands.is_empty() || !fix.manual_steps.is_empty() })
         );
+    }
+
+    #[test]
+    fn unenrolled_secure_boot_key_gets_an_actionable_plan() {
+        let mut e = evidence();
+        e.nvidia_module_loaded = false;
+        e.nvidia_smi.succeeded = false;
+        e.driver_version = None;
+        e.secure_boot_enabled = Some(true);
+        e.dkms_mok_key = Some("/var/lib/shim-signed/mok/MOK.der".into());
+        e.dkms_mok_key_enrolled = Some(false);
+        e.dkms_status = Some(
+            "nvidia/610.43.02, 7.0.0-27-generic, x86_64: installed".into(),
+        );
+
+        let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
+
+        assert!(diagnostics.fix_plan.causes.iter().any(|cause| {
+            cause
+                .title
+                .contains("Secure Boot does not trust the NVIDIA DKMS module-signing key")
+        }));
+        let enrollment = diagnostics
+            .fix_plan
+            .fixes
+            .iter()
+            .find(|fix| fix.id == FixId::EnrollModuleKey)
+            .expect("MOK enrollment fix");
+        assert_eq!(
+            enrollment.commands[0].display(),
+            "sudo mokutil --import /var/lib/shim-signed/mok/MOK.der"
+        );
+        assert!(
+            diagnostics
+                .fix_plan
+                .fixes
+                .iter()
+                .any(|fix| fix.id == FixId::RebuildDkms)
+        );
+        assert!(diagnostics.fix_plan.fixes.iter().any(|fix| {
+            fix.id == FixId::RebuildDkms
+                && fix.commands[0].display()
+                    == "sudo dkms autoinstall --force -k 6.8.0-generic"
+        }));
+        assert!(
+            diagnostics
+                .fix_plan
+                .fixes
+                .iter()
+                .any(|fix| fix.id == FixId::Reboot)
+        );
+    }
+
+    #[test]
+    fn unrelated_unenrolled_key_does_not_fail_a_working_driver() {
+        let mut e = evidence();
+        e.secure_boot_enabled = Some(true);
+        e.dkms_mok_key = Some("/var/lib/shim-signed/mok/MOK.der".into());
+        e.dkms_mok_key_enrolled = Some(false);
+
+        let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
+        let secure_boot = diagnostics
+            .checks
+            .iter()
+            .find(|check| check.id == DiagnosticId::SecureBoot)
+            .expect("Secure Boot check");
+
+        assert_eq!(secure_boot.status, DiagnosticStatus::Warning);
+        assert!(diagnostics.fix_plan.causes.is_empty());
     }
 
     #[test]

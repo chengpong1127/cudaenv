@@ -194,6 +194,7 @@ pub enum FixId {
     InstallKernelHeaders,
     InstallDriver,
     RepairManagedDriver,
+    EnrollModuleKey,
     RebuildDkms,
     ReinstallDriverLibraries,
     InstallToolkit,

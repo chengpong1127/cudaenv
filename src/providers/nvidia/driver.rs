@@ -1,4 +1,7 @@
-use std::{fs, process::Command};
+use std::{
+    fs,
+    process::{Command, Stdio},
+};
 
 use anyhow::{Context, Result};
 
@@ -41,6 +44,8 @@ pub fn kernel_headers_available() -> bool {
 pub fn module_metadata_available() -> bool {
     Command::new("modinfo")
         .arg("nvidia")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
 }

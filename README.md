@@ -27,8 +27,8 @@ arc install
 The guided setup asks what you want to use the machine for:
 
 ```text
-Model training     PyTorch, TensorFlow, or JAX
-CUDA development   Native CUDA apps and custom kernels
+AI Model Training       PyTorch, TensorFlow, or JAX
+CUDA Development        Native CUDA apps and custom kernels
 ```
 
 Model training configures the system for frameworks that provide their own CUDA
@@ -169,6 +169,11 @@ development packages, Secure Boot, and complete driver/Toolkit version
 compatibility. The default `model-training` profile treats a missing Toolkit as
 normal; `cuda-development` treats it as an error. If a Toolkit is present but
 partial or broken, both profiles report the fault.
+
+When Secure Boot is enabled and a managed DKMS driver is present but not loaded,
+doctor checks whether the local module-signing key is enrolled. If it is not,
+the fix plan shows the exact `mokutil` import, forced DKMS rebuild, MOK enrollment,
+and reboot sequence instead of treating the driver as a generic load failure.
 
 For a broken package-managed driver, doctor provides a concrete repair plan:
 install the development packages matching the running kernel, reinstall the

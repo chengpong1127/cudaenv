@@ -3,7 +3,10 @@ use std::fmt::Write;
 use console::style;
 
 use crate::model::{
-    environment::{DiagnosticSection, DiagnosticStatus, Diagnostics, ProviderStatus},
+    environment::{
+        DiagnosticSection, DiagnosticStatus, Diagnostics, DriverFlavorState,
+        DriverInstallation, DriverPackageScope, ProviderStatus,
+    },
     operation::OperationPlan,
     system::OsInfo,
 };
@@ -184,58 +187,150 @@ pub fn system_status(
     providers: &[ProviderStatus],
     upgrades: Option<&AvailableUpgrades>,
 ) {
-    println!("GPU Environment\n");
-    println!("OS:\n{}", os.display_name());
+    print!("{}", format_system_status(os, providers, upgrades));
+}
+
+pub fn format_system_status(
+    os: &OsInfo,
+    providers: &[ProviderStatus],
+    upgrades: Option<&AvailableUpgrades>,
+) -> String {
+    let mut rendered = String::new();
+    write_header(&mut rendered, "GPU Environment");
+
+    writeln!(rendered, "\n  {}", section_label("System")).unwrap();
+    write_metadata(&mut rendered, "OS", &os.display_name());
+    write_metadata(&mut rendered, "Architecture", &os.architecture);
+
     for status in providers {
-        println!("\n{} GPU(s):", status.vendor);
+        writeln!(
+            rendered,
+            "\n  {}",
+            section_label(&format!("{} GPU", status.vendor))
+        )
+        .unwrap();
         if status.devices.is_empty() {
-            println!("Not detected");
+            writeln!(
+                rendered,
+                "  {}  {}",
+                style("○").yellow(),
+                style("No compatible GPU detected").yellow()
+            )
+            .unwrap();
         } else {
             for device in &status.devices {
-                println!("{}", device.name);
+                writeln!(
+                    rendered,
+                    "  {}  {}",
+                    style("◆").cyan(),
+                    style(&device.name).bold()
+                )
+                .unwrap();
             }
         }
-        println!(
-            "\n{} Driver package:\n{}",
-            status.vendor,
-            status.driver.description()
+
+        writeln!(rendered, "\n  {}", section_label("Driver")).unwrap();
+        let package_mark = match &status.driver {
+            DriverInstallation::Managed { .. } => style("✓").green().bold().to_string(),
+            DriverInstallation::Unmanaged { working: true, .. } => {
+                style("!").yellow().bold().to_string()
+            }
+            DriverInstallation::Missing => style("○").yellow().to_string(),
+            DriverInstallation::BrokenManaged { .. }
+            | DriverInstallation::Unmanaged { working: false, .. } => {
+                style("✗").red().bold().to_string()
+            }
+        };
+        let package_value = driver_status_description(&status.driver);
+        write_state(&mut rendered, &package_mark, "Package", &package_value);
+
+        let (runtime_mark, runtime_value) = status.driver_version.as_deref().map_or_else(
+            || {
+                (
+                    style("✗").red().bold().to_string(),
+                    "Not loaded or not operational",
+                )
+            },
+            |version| (style("✓").green().bold().to_string(), version),
         );
+        write_state(&mut rendered, &runtime_mark, "Runtime", runtime_value);
         if let Some(version) = upgrades.and_then(|value| value.driver.as_deref()) {
-            println!("Available: {version}");
+            write_state(
+                &mut rendered,
+                &style("↑").cyan().bold().to_string(),
+                "Update",
+                &format!("{version} available"),
+            );
+        } else {
+            write_state(
+                &mut rendered,
+                &style("·").dim().to_string(),
+                "Update",
+                "No compatible update reported",
+            );
         }
-        println!(
-            "\n{} Driver runtime:\n{}",
-            status.vendor,
-            status
-                .driver_version
-                .as_deref()
-                .unwrap_or("Not loaded or not operational")
-        );
+
+        writeln!(rendered, "\n  {}", section_label("CUDA Toolkit")).unwrap();
         for toolkit in &status.toolkits {
-            println!(
-                "\n{}:\n{}\nPackages: {}\nManageable by arc: {}",
-                toolkit.name,
-                toolkit.version.as_deref().unwrap_or("version unknown"),
-                toolkit.packages.join(", "),
-                if toolkit.manageable { "yes" } else { "no" }
+            let version = toolkit.version.as_deref().unwrap_or("version unknown");
+            write_state(
+                &mut rendered,
+                &style("✓").green().bold().to_string(),
+                &toolkit.name,
+                version,
+            );
+            write_nested_metadata(&mut rendered, "Packages", &toolkit.packages.join(", "));
+            write_nested_metadata(
+                &mut rendered,
+                "Ownership",
+                if toolkit.manageable {
+                    "Managed by arc"
+                } else {
+                    "External"
+                },
             );
             if let Some(version) = upgrades.and_then(|value| value.toolkit.as_deref()) {
-                println!("Available compatible version: {version}");
+                write_state(
+                    &mut rendered,
+                    &style("↑").cyan().bold().to_string(),
+                    "Update",
+                    &format!("compatible {version} available"),
+                );
             }
         }
         if status.toolkits.is_empty() {
-            println!("\nSystem-managed CUDA Toolkit:\nNot installed");
+            write_state(
+                &mut rendered,
+                &style("○").dim().to_string(),
+                "System",
+                "Not installed",
+            );
         }
         if let Some(active) = &status.active_toolkit {
-            println!(
-                "\nActive nvcc (informational):\n{}\nPath: {}\nManaged by arc: no",
+            write_state(
+                &mut rendered,
+                &style("•").cyan().to_string(),
+                "Active nvcc",
                 active.version.as_deref().unwrap_or("version unknown"),
-                active.executable_path.as_deref().unwrap_or("unknown")
             );
+            write_nested_metadata(
+                &mut rendered,
+                "Path",
+                active.executable_path.as_deref().unwrap_or("unknown"),
+            );
+            write_nested_metadata(&mut rendered, "Ownership", "External / informational");
         } else {
-            println!("\nActive nvcc (informational):\nNot found on PATH");
+            write_state(
+                &mut rendered,
+                &style("○").dim().to_string(),
+                "Active nvcc",
+                "Not found on PATH",
+            );
         }
     }
+
+    writeln!(rendered).unwrap();
+    rendered
 }
 
 pub fn diagnostics(diagnostics: &Diagnostics) {
@@ -244,84 +339,244 @@ pub fn diagnostics(diagnostics: &Diagnostics) {
 
 pub fn format_diagnostics(diagnostics: &Diagnostics) -> String {
     let mut rendered = String::new();
-    writeln!(rendered, "{} Diagnostics", diagnostics.vendor).unwrap();
+    write_header(&mut rendered, &format!("{} Diagnostics", diagnostics.vendor));
+
+    let passed = diagnostic_count(diagnostics, DiagnosticStatus::Pass);
+    let warnings = diagnostic_count(diagnostics, DiagnosticStatus::Warning);
+    let errors = diagnostic_count(diagnostics, DiagnosticStatus::Error);
+    let skipped = diagnostic_count(diagnostics, DiagnosticStatus::Skipped);
+    let (result_label, result_style) = if errors > 0 {
+        ("Action required", style("Action required").red().bold())
+    } else if warnings > 0 {
+        ("Completed with warnings", style("Completed with warnings").yellow().bold())
+    } else {
+        ("Healthy", style("Healthy").green().bold())
+    };
+    writeln!(
+        rendered,
+        "\n  {}  {}",
+        result_style,
+        style(format!(
+            "{}  ·  {}  ·  {}  ·  {}",
+            count_phrase(passed, "passed", "passed"),
+            count_phrase(warnings, "warning", "warnings"),
+            count_phrase(errors, "error", "errors"),
+            count_phrase(skipped, "skipped", "skipped"),
+        ))
+        .dim()
+    )
+    .unwrap();
+
     for section in [
         DiagnosticSection::Hardware,
         DiagnosticSection::OperatingSystem,
         DiagnosticSection::Driver,
         DiagnosticSection::CudaToolkit,
     ] {
-        writeln!(rendered, "\n{section}").unwrap();
+        writeln!(rendered, "\n  {}", section_label(&section.to_string())).unwrap();
         for check in diagnostics
             .checks
             .iter()
             .filter(|check| check.section == section)
         {
-            writeln!(rendered, "{} {}", mark(check.status), check.name).unwrap();
+            writeln!(
+                rendered,
+                "  {}  {}",
+                styled_diagnostic_mark(check.status),
+                if check.status == DiagnosticStatus::Pass {
+                    style(&check.name).to_string()
+                } else {
+                    style(&check.name).bold().to_string()
+                }
+            )
+            .unwrap();
             if check.status != DiagnosticStatus::Pass {
                 if let Some(problem) = &check.problem {
-                    writeln!(rendered, "  {problem}").unwrap();
+                    writeln!(rendered, "     {problem}").unwrap();
                 }
-                for evidence in &check.evidence {
-                    writeln!(rendered, "  Evidence: {evidence}").unwrap();
+                for evidence in check
+                    .evidence
+                    .iter()
+                    .filter(|evidence| !empty_evidence(evidence))
+                {
+                    writeln!(rendered, "     {} {}", style("›").dim(), style(evidence).dim())
+                        .unwrap();
                 }
             }
         }
     }
     if diagnostics.healthy() && diagnostics.fix_plan.causes.is_empty() {
-        let has_warnings = diagnostics
-            .checks
-            .iter()
-            .any(|check| check.status == DiagnosticStatus::Warning);
         writeln!(
             rendered,
-            "\n{}",
-            if has_warnings {
-                "Completed with warnings"
+            "\n  {}  {}\n",
+            if warnings > 0 {
+                style("!").yellow().bold().to_string()
             } else {
-                "Healthy"
-            }
+                style("✓").green().bold().to_string()
+            },
+            result_label
         )
         .unwrap();
         return rendered;
     }
-    writeln!(rendered, "\nActionable fix plan").unwrap();
+
+    writeln!(rendered, "\n  {}", section_label("Next steps")).unwrap();
     for (index, cause) in diagnostics.fix_plan.causes.iter().enumerate() {
         writeln!(
             rendered,
-            "{}. Likely root cause: {} ({} confidence)",
-            index + 1,
-            cause.title,
-            cause.confidence
+            "  {}  {}",
+            style(if index == 0 { "!" } else { "·" }).red().bold(),
+            style(&cause.title).bold()
+        )
+        .unwrap();
+        writeln!(
+            rendered,
+            "     {} confidence",
+            style(cause.confidence).dim()
         )
         .unwrap();
         for evidence in &cause.evidence {
-            writeln!(rendered, "   Evidence: {evidence}").unwrap();
+            writeln!(rendered, "     {} {}", style("›").dim(), style(evidence).dim()).unwrap();
         }
     }
     for (index, fix) in diagnostics.fix_plan.fixes.iter().enumerate() {
-        writeln!(rendered, "\n{}. {}", index + 1, fix.title).unwrap();
+        writeln!(
+            rendered,
+            "\n  {}  {}",
+            style(format!("{:02}", index + 1)).cyan().bold(),
+            style(&fix.title).bold()
+        )
+        .unwrap();
         for command in &fix.commands {
-            writeln!(rendered, "   $ {}", command.display()).unwrap();
+            writeln!(
+                rendered,
+                "      {} {}",
+                style("$").dim(),
+                style(command.display()).cyan()
+            )
+            .unwrap();
         }
         for step in &fix.manual_steps {
-            writeln!(rendered, "   - {step}").unwrap();
+            writeln!(rendered, "      {} {step}", style("→").dim()).unwrap();
         }
+    }
+    if diagnostics.fix_plan.causes.is_empty() && diagnostics.fix_plan.fixes.is_empty() {
+        writeln!(
+            rendered,
+            "  {}  No remediation plan was generated; review the failed checks above.",
+            style("!").yellow().bold()
+        )
+        .unwrap();
     }
     writeln!(
         rendered,
-        "\nNo fixes were executed. After completing the plan, rerun `arc doctor`."
+        "\n  {}  No changes were made. Complete the steps, then rerun `arc doctor`.\n",
+        style("i").cyan().bold()
     )
     .unwrap();
     rendered
 }
 
-fn mark(status: DiagnosticStatus) -> &'static str {
+fn write_header(rendered: &mut String, title: &str) {
+    writeln!(rendered).unwrap();
+    writeln!(
+        rendered,
+        "  {}  {}",
+        style("arc").cyan().bold(),
+        style(title).bold()
+    )
+    .unwrap();
+    writeln!(rendered, "  {}", style("─".repeat(52)).dim()).unwrap();
+}
+
+fn write_metadata(rendered: &mut String, label: &str, value: &str) {
+    let padded_label = format!("{label:<12}");
+    writeln!(rendered, "  {}  {}", style(padded_label).dim(), value).unwrap();
+}
+
+fn write_nested_metadata(rendered: &mut String, label: &str, value: &str) {
+    let padded_label = format!("{label:<10}");
+    writeln!(rendered, "     {}  {}", style(padded_label).dim(), value).unwrap();
+}
+
+fn write_state(rendered: &mut String, mark: &str, label: &str, value: &str) {
+    let padded_label = format!("{label:<10}");
+    writeln!(rendered, "  {mark}  {}  {value}", style(padded_label).dim()).unwrap();
+}
+
+fn driver_status_description(driver: &DriverInstallation) -> String {
+    match driver {
+        DriverInstallation::Missing => "Not installed".into(),
+        DriverInstallation::Managed {
+            flavor,
+            scope,
+            branch,
+            ..
+        } => {
+            let flavor = match flavor {
+                DriverFlavorState::Open => "open kernel modules",
+                DriverFlavorState::Proprietary => "proprietary kernel modules",
+                DriverFlavorState::Mixed => "mixed module packages",
+            };
+            let scope = match scope {
+                DriverPackageScope::Full => "full",
+                DriverPackageScope::ComputeOnly => "compute-only",
+                DriverPackageScope::DesktopOnly => "desktop-only",
+            };
+            format!(
+                "Managed · {flavor} · {scope}{}",
+                branch
+                    .map(|branch| format!(" · pinned to R{branch}"))
+                    .unwrap_or_default()
+            )
+        }
+        DriverInstallation::BrokenManaged { flavor, .. } => format!(
+            "Broken managed {} installation",
+            match flavor {
+                DriverFlavorState::Open => "open-module",
+                DriverFlavorState::Proprietary => "proprietary-module",
+                DriverFlavorState::Mixed => "mixed-module",
+            }
+        ),
+        DriverInstallation::Unmanaged {
+            working,
+            runfile_likely,
+        } => format!(
+            "{} unmanaged installation{}",
+            if *working { "Working" } else { "Broken" },
+            if *runfile_likely {
+                " · runfile likely"
+            } else {
+                ""
+            }
+        ),
+    }
+}
+
+fn diagnostic_count(diagnostics: &Diagnostics, status: DiagnosticStatus) -> usize {
+    diagnostics
+        .checks
+        .iter()
+        .filter(|check| check.status == status)
+        .count()
+}
+
+fn count_phrase(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
+
+fn empty_evidence(evidence: &str) -> bool {
+    evidence
+        .split_once(':')
+        .is_some_and(|(_, value)| value.trim().is_empty())
+}
+
+fn styled_diagnostic_mark(status: DiagnosticStatus) -> String {
     match status {
-        DiagnosticStatus::Pass => "✓",
-        DiagnosticStatus::Warning => "⚠",
-        DiagnosticStatus::Error => "✗",
-        DiagnosticStatus::Skipped => "↷ skipped",
+        DiagnosticStatus::Pass => style("✓").green().bold().to_string(),
+        DiagnosticStatus::Warning => style("!").yellow().bold().to_string(),
+        DiagnosticStatus::Error => style("✗").red().bold().to_string(),
+        DiagnosticStatus::Skipped => style("↷").dim().to_string(),
     }
 }
 
@@ -330,11 +585,13 @@ mod tests {
     use super::*;
     use crate::model::{
         command::CommandSpec,
-        device::GpuVendor,
+        device::{GpuDevice, GpuVendor},
         environment::{
-            DiagnosticCheck, DiagnosticId, DiagnosticSection, DiagnosticStatus, FixPlan,
+            DiagnosticCheck, DiagnosticId, DiagnosticSection, DiagnosticStatus,
+            DriverFlavorState, DriverInstallation, DriverPackageScope, FixPlan, ProviderStatus,
         },
         operation::{OperationPlan, PlanDetail, PlanStep},
+        system::{Distribution, OsInfo},
     };
 
     #[test]
@@ -389,17 +646,72 @@ mod tests {
             ],
             fix_plan: FixPlan::default(),
         };
-        let output = format_diagnostics(&diagnostics);
+        let rendered = format_diagnostics(&diagnostics);
+        let output = console::strip_ansi_codes(&rendered);
         for expected in [
-            "Hardware",
-            "Operating System",
-            "Driver",
-            "CUDA Toolkit",
+            "NVIDIA Diagnostics",
+            "Action required",
+            "1 passed  ·  1 warning  ·  1 error  ·  1 skipped",
+            "HARDWARE",
+            "OPERATING SYSTEM",
+            "DRIVER",
+            "CUDA TOOLKIT",
             "✓",
-            "⚠",
+            "!",
             "✗",
-            "↷ skipped",
+            "↷",
+            "› fact",
+            "NEXT STEPS",
             "rerun `arc doctor`",
+        ] {
+            assert!(
+                output.contains(expected),
+                "missing {expected:?} in {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_output_has_a_compact_environment_hierarchy() {
+        let os = OsInfo {
+            distribution: Distribution::Ubuntu,
+            name: "Ubuntu".into(),
+            version_id: "26.04".into(),
+            architecture: "x86_64".into(),
+            is_wsl: false,
+        };
+        let provider = ProviderStatus {
+            vendor: GpuVendor::Nvidia,
+            devices: vec![GpuDevice {
+                vendor: GpuVendor::Nvidia,
+                name: "GeForce RTX 3080 Ti".into(),
+                pci_device_id: Some(0x2420),
+            }],
+            driver: DriverInstallation::Managed {
+                flavor: DriverFlavorState::Open,
+                scope: DriverPackageScope::Full,
+                branch: None,
+                packages: vec!["nvidia-open".into()],
+            },
+            driver_version: Some("610.43.02".into()),
+            toolkits: vec![],
+            active_toolkit: None,
+        };
+
+        let rendered = format_system_status(&os, &[provider], None);
+        let output = console::strip_ansi_codes(&rendered);
+        for expected in [
+            "arc  GPU Environment",
+            "SYSTEM",
+            "Ubuntu 26.04",
+            "NVIDIA GPU",
+            "GeForce RTX 3080 Ti",
+            "DRIVER",
+            "Package",
+            "Runtime",
+            "CUDA TOOLKIT",
+            "Not installed",
+            "Not found on PATH",
         ] {
             assert!(
                 output.contains(expected),
