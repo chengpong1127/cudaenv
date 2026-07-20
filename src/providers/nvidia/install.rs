@@ -98,16 +98,15 @@ fn build_plan(
             }
         );
     }
-    if matches!(status.driver, DriverInstallation::BrokenManaged { .. }) {
-        bail!(
-            "The installed NVIDIA packages are broken or not operational. Run `arc doctor` and repair or remove the managed installation before changing driver flavor or branch."
-        );
-    }
     if status.driver.flavor() == Some(DriverFlavorState::Mixed) {
         bail!(
             "Conflicting open and proprietary NVIDIA packages are installed. Repair or remove the mixed package installation before using arc install."
         );
     }
+    let broken_managed_packages = match &status.driver {
+        DriverInstallation::BrokenManaged { packages, .. } => Some(packages.as_slice()),
+        _ => None,
+    };
     let target_state = match policy.flavor {
         DriverFlavor::Open => DriverFlavorState::Open,
         DriverFlavor::Proprietary => DriverFlavorState::Proprietary,
@@ -139,6 +138,7 @@ fn build_plan(
         && status.driver.flavor() == Some(target_state)
         && branch_matches
         && driver_compatible;
+    let driver_pending_activation = driver_correct && status.driver_version.is_none();
     let branch_transition = policy.branch.is_some()
         && matches!(&status.driver, DriverInstallation::Managed { branch, .. } if *branch != policy.branch);
     let transition = current_flavor.is_some_and(|from| from != policy.flavor) || branch_transition;
@@ -181,6 +181,24 @@ fn build_plan(
             "Refresh package metadata after ensuring prerequisites",
             package_manager::refresh_command(os.package_manager()),
         ));
+        if let Some(packages) = broken_managed_packages {
+            if let Some(command) = package_manager::reinstall_command(os.package_manager(), packages)
+            {
+                steps.push(PlanStep::new(
+                    "Reinstall the detected NVIDIA driver packages",
+                    command,
+                ));
+            }
+            if packages.iter().any(|package| package.contains("dkms")) {
+                steps.push(PlanStep::new(
+                    "Rebuild the NVIDIA module for the running kernel",
+                    crate::model::command::CommandSpec::sudo(
+                        "dkms",
+                        ["autoinstall", "-k", kernel],
+                    ),
+                ));
+            }
+        }
         if let Some(from) = current_flavor {
             steps.extend(
                 recipe::transition_commands(os, policy, from)
@@ -226,9 +244,19 @@ fn build_plan(
             toolkit::verification_command(),
         ));
     }
-    let driver_detail = if driver_correct {
+    let driver_detail = if driver_pending_activation {
+        format!(
+            "{} installed; kernel module is ready but not loaded — reboot required",
+            policy.flavor.package()
+        )
+    } else if driver_correct {
         format!(
             "{} already managed correctly — skipped",
+            policy.flavor.package()
+        )
+    } else if broken_managed_packages.is_some() {
+        format!(
+            "repair detected packages and ensure {} is installed",
             policy.flavor.package()
         )
     } else if transition {
@@ -302,7 +330,11 @@ fn build_plan(
         steps,
         confirmation_warning: "No system changes will be made until you confirm.".into(),
         completion_message: "Installation completed.".into(),
-        reboot_message: install_driver.then(|| "Reboot to load the NVIDIA driver.".into()),
+        reboot_message: if driver_pending_activation {
+            Some("The NVIDIA kernel module is installed but not loaded. Reboot, then run `arc doctor` if the driver is still unavailable.".into())
+        } else {
+            install_driver.then(|| "Reboot to load the NVIDIA driver.".into())
+        },
     })
 }
 
@@ -409,6 +441,68 @@ mod tests {
         )
         .unwrap();
         assert!(plan.is_noop());
+    }
+
+    #[test]
+    fn installed_module_waiting_for_reboot_is_a_noop_with_guidance() {
+        let mut current = status(managed(DriverFlavorState::Open, None), None);
+        current.driver_version = None;
+        let plan = build_plan(
+            &os(),
+            &options(InstallProfile::ModelTraining, None),
+            "6.8.0-generic",
+            &[gpu(Generation::TuringOrNewer)],
+            &current,
+            &repository::resolve(&os()).unwrap(),
+            true,
+            false,
+        )
+        .unwrap();
+
+        assert!(plan.is_noop());
+        assert!(
+            plan.reboot_message
+                .as_deref()
+                .unwrap()
+                .contains("installed but not loaded")
+        );
+    }
+
+    #[test]
+    fn broken_managed_driver_gets_an_executable_repair_plan() {
+        let mut current = status(
+            DriverInstallation::BrokenManaged {
+                flavor: DriverFlavorState::Open,
+                packages: vec!["nvidia-open".into(), "nvidia-dkms-610-open".into()],
+            },
+            None,
+        );
+        current.driver_version = None;
+        let plan = build_plan(
+            &os(),
+            &options(InstallProfile::ModelTraining, None),
+            "6.8.0-generic",
+            &[gpu(Generation::TuringOrNewer)],
+            &current,
+            &repository::resolve(&os()).unwrap(),
+            true,
+            false,
+        )
+        .unwrap();
+        let commands = plan
+            .steps
+            .iter()
+            .map(|step| step.command.display())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(commands.contains(
+            "apt-get install --reinstall -y nvidia-open nvidia-dkms-610-open"
+        ));
+        assert!(commands.contains("dkms autoinstall -k 6.8.0-generic"));
+        assert!(commands.contains("apt-get install -y nvidia-open"));
+        assert!(commands.contains("modinfo nvidia"));
+        assert!(plan.reboot_message.is_some());
     }
 
     #[test]
