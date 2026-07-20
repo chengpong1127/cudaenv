@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     model::{
         environment::{DriverFlavorState, DriverInstallation, ProviderStatus},
-        operation::{OperationPlan, PlanDetail, PlanStep},
+        operation::{NextStep, OperationPlan, PlanDetail, PlanStage, PlanStep},
         system::OsInfo,
     },
     platform::package_manager,
@@ -151,6 +151,52 @@ fn build_plan(
         toolkit_install_needed(package, current_toolkit, toolkit_package_installed)
     });
     let install_driver = !driver_correct;
+    let driver_name = match policy.flavor {
+        DriverFlavor::Open => "NVIDIA Open driver",
+        DriverFlavor::Proprietary => "NVIDIA proprietary driver",
+    };
+    let repository_stage = PlanStage::new(
+        "Configure the NVIDIA CUDA repository",
+        "Configuring the NVIDIA repository...",
+        "Configured the NVIDIA repository",
+        "Could not configure the NVIDIA repository",
+    );
+    let refresh_stage = PlanStage::new(
+        "Refresh package metadata",
+        "Refreshing package metadata...",
+        "Refreshed package metadata",
+        "Could not refresh package metadata",
+    );
+    let prerequisites_stage = PlanStage::new(
+        "Install driver prerequisites",
+        "Installing driver prerequisites...",
+        "Installed driver prerequisites",
+        "Could not install driver prerequisites",
+    );
+    let driver_stage = PlanStage::new(
+        format!("Install the {driver_name}"),
+        format!("Installing the {driver_name}..."),
+        format!("Installed the {driver_name}"),
+        format!("Could not install the {driver_name}"),
+    );
+    let driver_verification_stage = PlanStage::new(
+        "Verify the installation",
+        "Verifying the installation...",
+        "Verified the installation",
+        "Could not verify the installation",
+    );
+    let toolkit_stage = PlanStage::new(
+        "Install the CUDA Toolkit",
+        "Installing the CUDA Toolkit...",
+        "Installed the CUDA Toolkit",
+        "Could not install the CUDA Toolkit",
+    );
+    let toolkit_verification_stage = PlanStage::new(
+        "Verify the CUDA Toolkit",
+        "Verifying the CUDA Toolkit...",
+        "Verified the CUDA Toolkit",
+        "Could not verify the CUDA Toolkit",
+    );
     let mut steps = Vec::new();
     if install_driver || install_toolkit {
         if !repository_configured {
@@ -162,39 +208,52 @@ fn build_plan(
             steps.extend(
                 repository::setup_commands(os.package_manager(), repository)
                     .into_iter()
-                    .map(|command| PlanStep::new("Configure the NVIDIA CUDA repository", command)),
+                    .map(|command| {
+                        PlanStep::new("Configure the NVIDIA CUDA repository", command)
+                            .in_stage(&repository_stage)
+                    }),
             );
         }
-        steps.push(PlanStep::new(
-            "Refresh package metadata",
-            package_manager::refresh_command(os.package_manager()),
-        ));
+        steps.push(
+            PlanStep::new(
+                "Refresh package metadata",
+                package_manager::refresh_command(os.package_manager()),
+            )
+            .in_stage(&refresh_stage),
+        );
     }
     if install_driver {
-        steps.extend(
-            recipe
-                .prerequisites
-                .into_iter()
-                .map(|command| PlanStep::new("Ensure NVIDIA driver prerequisites", command)),
+        steps.extend(recipe.prerequisites.into_iter().map(|command| {
+            PlanStep::new("Ensure NVIDIA driver prerequisites", command)
+                .in_stage(&prerequisites_stage)
+        }));
+        steps.push(
+            PlanStep::new(
+                "Refresh package metadata after ensuring prerequisites",
+                package_manager::refresh_command(os.package_manager()),
+            )
+            .in_stage(&prerequisites_stage),
         );
-        steps.push(PlanStep::new(
-            "Refresh package metadata after ensuring prerequisites",
-            package_manager::refresh_command(os.package_manager()),
-        ));
         if let Some(packages) = broken_managed_packages {
             if let Some(command) =
                 package_manager::reinstall_command(os.package_manager(), packages)
             {
-                steps.push(PlanStep::new(
-                    "Reinstall the detected NVIDIA driver packages",
-                    command,
-                ));
+                steps.push(
+                    PlanStep::new("Reinstall the detected NVIDIA driver packages", command)
+                        .in_stage(&driver_stage),
+                );
             }
             if packages.iter().any(|package| package.contains("dkms")) {
-                steps.push(PlanStep::new(
-                    "Rebuild the NVIDIA module for the running kernel",
-                    crate::model::command::CommandSpec::sudo("dkms", ["autoinstall", "-k", kernel]),
-                ));
+                steps.push(
+                    PlanStep::new(
+                        "Rebuild the NVIDIA module for the running kernel",
+                        crate::model::command::CommandSpec::sudo(
+                            "dkms",
+                            ["autoinstall", "-k", kernel],
+                        ),
+                    )
+                    .in_stage(&driver_stage),
+                );
             }
         }
         if let Some(from) = current_flavor {
@@ -203,44 +262,59 @@ fn build_plan(
                     .into_iter()
                     .map(|command| {
                         PlanStep::new("Transition the NVIDIA driver package stream", command)
+                            .in_stage(&driver_stage)
                     }),
             );
         } else {
-            steps.extend(
-                recipe.driver_preparation.into_iter().map(|command| {
-                    PlanStep::new("Select the NVIDIA driver package stream", command)
-                }),
+            steps.extend(recipe.driver_preparation.into_iter().map(|command| {
+                PlanStep::new("Select the NVIDIA driver package stream", command)
+                    .in_stage(&driver_stage)
+            }));
+            steps.push(
+                PlanStep::new(
+                    format!(
+                        "Verify NVIDIA driver package {} is available",
+                        policy.flavor.package()
+                    ),
+                    package_manager::query_command(os.package_manager(), policy.flavor.package()),
+                )
+                .in_stage(&driver_stage),
             );
-            steps.push(PlanStep::new(
-                format!(
-                    "Verify NVIDIA driver package {} is available",
-                    policy.flavor.package()
-                ),
-                package_manager::query_command(os.package_manager(), policy.flavor.package()),
-            ));
-            steps.push(PlanStep::new(
-                "Install the NVIDIA driver",
-                recipe.driver_install,
-            ));
+            steps.push(
+                PlanStep::new("Install the NVIDIA driver", recipe.driver_install)
+                    .in_stage(&driver_stage),
+            );
         }
-        steps.push(PlanStep::new(
-            "Verify that NVIDIA kernel module metadata is installed",
-            recipe.driver_verification,
-        ));
+        steps.push(
+            PlanStep::new(
+                "Verify that NVIDIA kernel module metadata is installed",
+                recipe.driver_verification,
+            )
+            .in_stage(&driver_verification_stage),
+        );
     }
     if install_toolkit && let Some(package) = toolkit_package.as_deref() {
-        steps.push(PlanStep::new(
-            format!("Verify CUDA Toolkit package {package} is available"),
-            package_manager::query_command(os.package_manager(), package),
-        ));
-        steps.push(PlanStep::new(
-            format!("Install {package}"),
-            package_manager::install_command(os.package_manager(), package),
-        ));
-        steps.push(PlanStep::new(
-            "Verify the CUDA Toolkit with nvcc",
-            toolkit::verification_command(),
-        ));
+        steps.push(
+            PlanStep::new(
+                format!("Verify CUDA Toolkit package {package} is available"),
+                package_manager::query_command(os.package_manager(), package),
+            )
+            .in_stage(&toolkit_stage),
+        );
+        steps.push(
+            PlanStep::new(
+                format!("Install {package}"),
+                package_manager::install_command(os.package_manager(), package),
+            )
+            .in_stage(&toolkit_stage),
+        );
+        steps.push(
+            PlanStep::new(
+                "Verify the CUDA Toolkit with nvcc",
+                toolkit::verification_command(),
+            )
+            .in_stage(&toolkit_verification_stage),
+        );
     }
     let driver_detail = if driver_pending_activation {
         format!(
@@ -323,12 +397,14 @@ fn build_plan(
         devices: status.devices.clone(),
         steps,
         confirmation_warning: String::new(),
-        completion_message: "Installation completed.".into(),
-        reboot_message: if driver_pending_activation {
-            Some("The NVIDIA kernel module is installed but not loaded. Reboot, then run `arc doctor` if the driver is still unavailable.".into())
-        } else {
-            install_driver.then(|| "Reboot to load the NVIDIA driver.".into())
+        completion_message: match (install_driver, install_toolkit) {
+            (true, true) => format!("{driver_name} and CUDA Toolkit installed and verified."),
+            (true, false) => format!("{driver_name} installed and verified."),
+            (false, true) => "CUDA Toolkit installed and verified.".into(),
+            (false, false) => "Requested NVIDIA components are already installed.".into(),
         },
+        next_step: (driver_pending_activation || install_driver)
+            .then_some(NextStep::LoadNvidiaDriver),
     })
 }
 
@@ -460,12 +536,7 @@ mod tests {
         .unwrap();
 
         assert!(plan.is_noop());
-        assert!(
-            plan.reboot_message
-                .as_deref()
-                .unwrap()
-                .contains("installed but not loaded")
-        );
+        assert_eq!(plan.next_step, Some(NextStep::LoadNvidiaDriver));
     }
 
     #[test]
@@ -502,7 +573,48 @@ mod tests {
         assert!(commands.contains("dkms autoinstall -k 6.8.0-generic"));
         assert!(commands.contains("apt-get install -y nvidia-open"));
         assert!(commands.contains("modinfo nvidia"));
-        assert!(plan.reboot_message.is_some());
+        assert!(plan.next_step.is_some());
+    }
+
+    #[test]
+    fn low_level_driver_commands_are_grouped_under_past_tense_ui_stages() {
+        let plan = build_plan(
+            &os(),
+            &options(InstallProfile::ModelTraining, None),
+            "6.8.0-generic",
+            &[gpu(Generation::TuringOrNewer)],
+            &status(DriverInstallation::Missing, None),
+            &repository::resolve(&os()).unwrap(),
+            true,
+            false,
+        )
+        .unwrap();
+        let titles = plan
+            .steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                let (_, first, _) = plan.stage_position(index);
+                first.then_some(step.stage.title.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            titles,
+            [
+                "Refresh package metadata",
+                "Install driver prerequisites",
+                "Install the NVIDIA Open driver",
+                "Verify the installation",
+            ]
+        );
+        assert!(plan.steps.len() > plan.stage_count());
+        assert_eq!(plan.steps[0].stage.success, "Refreshed package metadata");
+        assert!(
+            plan.steps
+                .iter()
+                .all(|step| !step.stage.success.ends_with(" complete"))
+        );
     }
 
     #[test]

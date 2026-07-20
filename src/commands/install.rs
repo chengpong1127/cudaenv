@@ -10,7 +10,7 @@ use crate::{
     ui::{output, prompt},
 };
 
-pub fn run(args: InstallArgs, verbose: bool) -> Result<()> {
+pub fn run(args: InstallArgs, verbose: bool, show_commands: bool) -> Result<()> {
     let profile = resolve_profile(args.profile, args.toolkit.as_deref())?;
     let options = InstallOptions {
         profile: match profile {
@@ -26,25 +26,25 @@ pub fn run(args: InstallArgs, verbose: bool) -> Result<()> {
     };
     let mut plan = install::plan(&os::detect()?, &options)?;
     command::normalize_for_current_user(&mut plan);
-    output::operation_plan(&plan);
+    output::operation_plan(&plan, show_commands);
 
     if args.dry_run {
         output::notice("Dry run complete. No changes were made.");
         return Ok(());
     }
     if plan.is_noop() {
-        output::notice(
-            plan.reboot_message
-                .as_deref()
-                .unwrap_or("Requested components are already installed. No changes were made."),
-        );
+        if plan.next_step.is_some() {
+            output::operation_completed(&plan);
+        } else {
+            output::notice("Requested components are already installed. No changes were made.");
+        }
         return Ok(());
     }
     if !args.yes && !prompt::confirm_install()? {
         output::cancelled("Installation");
         return Ok(());
     }
-    let mut reporter = output::ExecutionReporter::new(verbose);
+    let mut reporter = output::ExecutionReporter::new(&plan, verbose);
     let execution =
         command::execute_plan(&command::SystemCommandRunner, &plan, verbose, |event| {
             reporter.report(event)

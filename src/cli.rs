@@ -7,6 +7,9 @@ pub struct Cli {
     /// Stream command output directly instead of using compact progress output.
     #[arg(long, short = 'v', global = true)]
     pub verbose: bool,
+    /// Show exact commands in operation plans without streaming runtime logs.
+    #[arg(long, global = true)]
+    pub show_commands: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -128,5 +131,12 @@ mod tests {
                 .unwrap()
                 .verbose
         );
+    }
+
+    #[test]
+    fn show_commands_is_global_and_does_not_enable_verbose_output() {
+        let cli = Cli::try_parse_from(["arc", "install", "--dry-run", "--show-commands"]).unwrap();
+        assert!(cli.show_commands);
+        assert!(!cli.verbose);
     }
 }

@@ -13,7 +13,7 @@ pub enum UpgradeOutcome {
     Unavailable,
 }
 
-pub fn run(args: UpgradeArgs, verbose: bool) -> Result<UpgradeOutcome> {
+pub fn run(args: UpgradeArgs, verbose: bool, show_commands: bool) -> Result<UpgradeOutcome> {
     let options = UpgradeOptions::from_component_flags(args.driver, args.toolkit);
     let mut plan = match upgrade::plan(&os::detect()?, &options) {
         Ok(plan) => plan,
@@ -27,7 +27,7 @@ pub fn run(args: UpgradeArgs, verbose: bool) -> Result<UpgradeOutcome> {
         Err(error) => return Err(error),
     };
     command::normalize_for_current_user(&mut plan);
-    output::operation_plan(&plan);
+    output::operation_plan(&plan, show_commands);
 
     if args.dry_run {
         output::notice("Dry run complete. No changes were made.");
@@ -43,7 +43,7 @@ pub fn run(args: UpgradeArgs, verbose: bool) -> Result<UpgradeOutcome> {
         output::cancelled("Upgrade");
         return Ok(UpgradeOutcome::Success);
     }
-    let mut reporter = output::ExecutionReporter::new(verbose);
+    let mut reporter = output::ExecutionReporter::new(&plan, verbose);
     let execution =
         command::execute_plan(&command::SystemCommandRunner, &plan, verbose, |event| {
             reporter.report(event)

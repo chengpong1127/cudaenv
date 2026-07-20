@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     model::{
         environment::{DriverInstallation, ProviderStatus},
-        operation::{OperationPlan, PlanDetail, PlanStep},
+        operation::{NextStep, OperationPlan, PlanDetail, PlanStage, PlanStep},
         system::{Distribution, OsInfo},
     },
     platform::package_manager,
@@ -40,6 +40,7 @@ pub fn plan(os: &OsInfo, status: &ProviderStatus) -> Result<OperationPlan> {
 }
 
 fn build_plan(status: &ProviderStatus, packages: Vec<String>) -> OperationPlan {
+    let package_count = packages.len();
     let toolkit_installed = packages
         .iter()
         .any(|p| p.starts_with("cuda-") && !p.starts_with("cuda-drivers"));
@@ -51,17 +52,38 @@ fn build_plan(status: &ProviderStatus, packages: Vec<String>) -> OperationPlan {
     });
     let mut steps = Vec::new();
     if !packages.is_empty() {
-        steps.push(PlanStep::new(
-            "Purge every listed NVIDIA and CUDA package",
-            package_manager::apt_remove_command(
-                &["purge", "--yes"],
-                &packages.iter().map(String::as_str).collect::<Vec<_>>(),
-            ),
-        ));
-        steps.push(PlanStep::new(
-            "Remove dependencies made unnecessary by the purge",
-            crate::model::command::CommandSpec::sudo("apt-get", ["autoremove", "--purge", "--yes"]),
-        ));
+        let removal_stage = PlanStage::new(
+            format!("Remove {package_count} NVIDIA and CUDA packages"),
+            format!("Removing {package_count} NVIDIA and CUDA packages..."),
+            format!("Removed {package_count} NVIDIA and CUDA packages"),
+            format!("Could not remove {package_count} NVIDIA and CUDA packages"),
+        );
+        let dependencies_stage = PlanStage::new(
+            "Remove unused dependencies",
+            "Removing unused dependencies...",
+            "Removed unused dependencies",
+            "Could not remove unused dependencies",
+        );
+        steps.push(
+            PlanStep::new(
+                "Purge every listed NVIDIA and CUDA package",
+                package_manager::apt_remove_command(
+                    &["purge", "--yes"],
+                    &packages.iter().map(String::as_str).collect::<Vec<_>>(),
+                ),
+            )
+            .in_stage(&removal_stage),
+        );
+        steps.push(
+            PlanStep::new(
+                "Remove dependencies made unnecessary by the purge",
+                crate::model::command::CommandSpec::sudo(
+                    "apt-get",
+                    ["autoremove", "--purge", "--yes"],
+                ),
+            )
+            .in_stage(&dependencies_stage),
+        );
     }
     OperationPlan {
         title: "NVIDIA Uninstall Plan".into(),
@@ -82,19 +104,33 @@ fn build_plan(status: &ProviderStatus, packages: Vec<String>) -> OperationPlan {
                     "not detected"
                 },
             ),
-            PlanDetail::new(
-                "Exact packages",
-                packages.join(", "),
-            ),
+            PlanDetail::new("Packages", package_summary(&packages)),
         ],
         devices: status.devices.clone(),
         steps,
-        confirmation_warning:
-            "Every package above will be purged; apt autoremove will then remove dependencies that are no longer required."
-                .into(),
-        completion_message: "Detected CUDA/NVIDIA components were removed.".into(),
-        reboot_message: driver_installed
-            .then(|| "Reboot Ubuntu before installing another driver.".into()),
+        confirmation_warning: "This will remove the installed NVIDIA driver and CUDA components."
+            .into(),
+        completion_message: format!("Removed {package_count} NVIDIA and CUDA packages."),
+        next_step: driver_installed.then_some(NextStep::RebootBeforeNvidiaInstall),
+    }
+}
+
+fn package_summary(packages: &[String]) -> String {
+    let count = packages.len();
+    let noun = if count == 1 { "package" } else { "packages" };
+    let mut preview = packages
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if count > 3 {
+        preview.push_str(&format!(", +{} more", count - 3));
+    }
+    if preview.is_empty() {
+        format!("{count} installed {noun}")
+    } else {
+        format!("{count} installed {noun}\n{preview}")
     }
 }
 
@@ -227,5 +263,49 @@ mod tests {
         assert!(package_matches("nvidia-*", "nvidia-open-dkms"));
         assert!(package_matches("libnvidia-*", "libnvidia-compute-580"));
         assert!(!package_matches("cuda-*", "arc"));
+    }
+
+    #[test]
+    fn package_summary_uses_count_and_short_preview() {
+        let packages = [
+            "cuda-keyring".into(),
+            "nvidia-open".into(),
+            "nvidia-driver-open".into(),
+            "libnvidia-compute".into(),
+            "libnvidia-gl".into(),
+        ];
+        assert_eq!(
+            package_summary(&packages),
+            "5 installed packages\ncuda-keyring, nvidia-open, nvidia-driver-open, +2 more"
+        );
+    }
+
+    #[test]
+    fn uninstall_summary_and_labels_are_deterministic_and_distribution_neutral() {
+        let status = ProviderStatus {
+            vendor: GpuVendor::Nvidia,
+            devices: vec![],
+            driver: managed(),
+            driver_version: Some("610.43.02".into()),
+            driver_runtime_operational: true,
+            driver_runtime_state: crate::model::environment::DriverRuntimeState::Operational,
+            dkms_status: None,
+            driver_module: None,
+            kernel_version: None,
+            secure_boot_enabled: None,
+            toolkits: vec![],
+            active_toolkit: None,
+        };
+        let plan = build_plan(&status, vec!["cuda-keyring".into(), "nvidia-open".into()]);
+        assert_eq!(
+            plan.completion_message,
+            "Removed 2 NVIDIA and CUDA packages."
+        );
+        assert_eq!(
+            plan.steps[0].stage.success,
+            "Removed 2 NVIDIA and CUDA packages"
+        );
+        assert_eq!(plan.next_step, Some(NextStep::RebootBeforeNvidiaInstall));
+        assert!(!plan.completion_message.contains("Ubuntu"));
     }
 }

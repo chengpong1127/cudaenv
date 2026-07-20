@@ -434,7 +434,7 @@ mod tests {
                 .collect(),
             confirmation_warning: String::new(),
             completion_message: String::new(),
-            reboot_message: None,
+            next_step: None,
         }
     }
 
@@ -487,6 +487,59 @@ mod tests {
         assert!(error.contains("bad 'arg with spaces'"));
         assert!(error.contains("important error"));
         assert!(error.contains("Full log:"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failure_inside_grouped_stage_reports_parent_and_stops_following_commands() {
+        let dir = temp_log_dir("grouped-failure");
+        let stage = crate::model::operation::PlanStage::new(
+            "Configure repository",
+            "Configuring repository...",
+            "Configured repository",
+            "Could not configure repository",
+        );
+        let mut grouped = plan(vec![
+            CommandSpec::new("first", ["ok"]),
+            CommandSpec::new("second", ["fails"]),
+            CommandSpec::new("never", ["run"]),
+        ]);
+        grouped.steps[0].stage = stage.clone();
+        grouped.steps[1].stage = stage;
+        let failed = CommandResult {
+            success: false,
+            exit_code: Some(17),
+            stdout: vec![],
+            stderr: b"group setup failed\n".to_vec(),
+        };
+        let runner = FakeRunner::with_results(vec![CommandResult::success([], []), failed]);
+        let events = RefCell::new(Vec::new());
+        let error = execute_plan_in(&runner, &grouped, false, Some(&dir), |event| match event {
+            ExecutionEvent::Started { index, step, .. } => events
+                .borrow_mut()
+                .push(format!("start:{index}:{}", step.stage.title)),
+            ExecutionEvent::Completed { index, .. } => {
+                events.borrow_mut().push(format!("complete:{index}"))
+            }
+            ExecutionEvent::Failed { index, step, .. } => events
+                .borrow_mut()
+                .push(format!("fail:{index}:{}", step.stage.failure)),
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(runner.calls.borrow().len(), 2);
+        assert_eq!(
+            events.into_inner(),
+            [
+                "start:0:Configure repository",
+                "complete:0",
+                "start:1:Configure repository",
+                "fail:1:Could not configure repository",
+            ]
+        );
+        assert!(error.contains("second fails"));
+        assert!(error.contains("group setup failed"));
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -10,7 +10,7 @@ use crate::{
     ui::{output, prompt},
 };
 
-pub fn run(args: UninstallArgs, verbose: bool) -> Result<()> {
+pub fn run(args: UninstallArgs, verbose: bool, show_commands: bool) -> Result<()> {
     let system = os::detect()?;
     let status = NvidiaProvider.inspect()?;
     let mut plan = uninstall::plan(&system, &status)?;
@@ -19,12 +19,12 @@ pub fn run(args: UninstallArgs, verbose: bool) -> Result<()> {
         output::notice("No installed CUDA Toolkit or NVIDIA driver was detected.");
         return Ok(());
     }
-    output::operation_plan(&plan);
+    output::operation_plan(&plan, show_commands);
     if !args.yes && !prompt::confirm_uninstall()? {
         output::cancelled("Uninstall");
         return Ok(());
     }
-    let mut reporter = output::ExecutionReporter::new(verbose);
+    let mut reporter = output::ExecutionReporter::new(&plan, verbose);
     let execution =
         command::execute_plan(&command::SystemCommandRunner, &plan, verbose, |event| {
             reporter.report(event)

@@ -9,7 +9,7 @@ use crate::{
     model::{
         command::CommandSpec,
         environment::{DriverFlavorState, DriverInstallation, ProviderStatus},
-        operation::{OperationPlan, PlanDetail, PlanStep},
+        operation::{NextStep, OperationPlan, PlanDetail, PlanStage, PlanStep},
         system::{Distribution, OsInfo, PackageManager},
     },
     platform::package_manager,
@@ -340,6 +340,42 @@ pub fn build_plan(
 
     let driver_changes = driver_target.is_some();
     let toolkit_changes = toolkit_candidate.is_some();
+    let refresh_stage = PlanStage::new(
+        "Refresh package metadata",
+        "Refreshing package metadata...",
+        "Refreshed package metadata",
+        "Could not refresh package metadata",
+    );
+    let prerequisites_stage = PlanStage::new(
+        "Prepare the driver upgrade",
+        "Preparing the driver upgrade...",
+        "Prepared the driver upgrade",
+        "Could not prepare the driver upgrade",
+    );
+    let driver_stage = PlanStage::new(
+        "Upgrade the NVIDIA driver",
+        "Upgrading the NVIDIA driver...",
+        "Upgraded the NVIDIA driver",
+        "Could not upgrade the NVIDIA driver",
+    );
+    let driver_verification_stage = PlanStage::new(
+        "Verify the driver upgrade",
+        "Verifying the driver upgrade...",
+        "Verified the driver upgrade",
+        "Could not verify the driver upgrade",
+    );
+    let toolkit_stage = PlanStage::new(
+        "Upgrade the CUDA Toolkit",
+        "Upgrading the CUDA Toolkit...",
+        "Upgraded the CUDA Toolkit",
+        "Could not upgrade the CUDA Toolkit",
+    );
+    let toolkit_verification_stage = PlanStage::new(
+        "Verify the CUDA Toolkit upgrade",
+        "Verifying the CUDA Toolkit upgrade...",
+        "Verified the CUDA Toolkit upgrade",
+        "Could not verify the CUDA Toolkit upgrade",
+    );
     let mut steps = Vec::new();
     if driver_changes || toolkit_changes {
         if !current.repository_configured {
@@ -347,10 +383,13 @@ pub fn build_plan(
                 "the NVIDIA repository is not configured; use `arc install` to configure a supported repository before upgrading",
             ));
         }
-        steps.push(PlanStep::new(
-            "Refresh package metadata",
-            package_manager::refresh_command(os.package_manager()),
-        ));
+        steps.push(
+            PlanStep::new(
+                "Refresh package metadata",
+                package_manager::refresh_command(os.package_manager()),
+            )
+            .in_stage(&refresh_stage),
+        );
     }
     if driver_changes {
         steps.extend(
@@ -361,67 +400,94 @@ pub fn build_plan(
                         "Ensure matching running-kernel development packages",
                         command,
                     )
+                    .in_stage(&prerequisites_stage)
                 }),
         );
         if legacy
             && !has_r580_restriction(&current.restrictions)
             && current.status.driver.branch().is_none()
         {
-            steps.extend(
-                legacy_lock_commands(os).into_iter().map(|command| {
-                    PlanStep::new("Pin the legacy driver to the R580 branch", command)
-                }),
-            );
+            steps.extend(legacy_lock_commands(os).into_iter().map(|command| {
+                PlanStep::new("Pin the legacy driver to the R580 branch", command)
+                    .in_stage(&prerequisites_stage)
+            }));
         }
         let package = current.driver_package.as_ref().unwrap();
-        steps.push(PlanStep::new(
-            format!(
-                "Upgrade {} without changing kernel-module flavor",
-                package.name
-            ),
-            driver_upgrade_command(os, &package.name, current.status.driver.branch()),
-        ));
-        steps.push(PlanStep::new(
-            "Verify installed NVIDIA package version",
-            installed_version_command(os.package_manager(), &package.name),
-        ));
-        steps.push(PlanStep::new(
-            "Verify NVIDIA kernel module metadata",
-            CommandSpec::new("modinfo", ["nvidia"]),
-        ));
+        steps.push(
+            PlanStep::new(
+                format!(
+                    "Upgrade {} without changing kernel-module flavor",
+                    package.name
+                ),
+                driver_upgrade_command(os, &package.name, current.status.driver.branch()),
+            )
+            .in_stage(&driver_stage),
+        );
+        steps.push(
+            PlanStep::new(
+                "Verify installed NVIDIA package version",
+                installed_version_command(os.package_manager(), &package.name),
+            )
+            .in_stage(&driver_verification_stage),
+        );
+        steps.push(
+            PlanStep::new(
+                "Verify NVIDIA kernel module metadata",
+                CommandSpec::new("modinfo", ["nvidia"]),
+            )
+            .in_stage(&driver_verification_stage),
+        );
     }
     if let Some(candidate) = &toolkit_candidate {
-        steps.push(PlanStep::new(
-            format!(
-                "Verify CUDA Toolkit package {} is available",
-                candidate.package
-            ),
-            package_manager::query_command(os.package_manager(), &candidate.package),
-        ));
-        steps.push(PlanStep::new(
-            format!("Install CUDA Toolkit {} side by side", candidate.version),
-            package_manager::install_command(os.package_manager(), &candidate.package),
-        ));
+        steps.push(
+            PlanStep::new(
+                format!(
+                    "Verify CUDA Toolkit package {} is available",
+                    candidate.package
+                ),
+                package_manager::query_command(os.package_manager(), &candidate.package),
+            )
+            .in_stage(&toolkit_stage),
+        );
+        steps.push(
+            PlanStep::new(
+                format!("Install CUDA Toolkit {} side by side", candidate.version),
+                package_manager::install_command(os.package_manager(), &candidate.package),
+            )
+            .in_stage(&toolkit_stage),
+        );
         let target_dir = format!("/usr/local/cuda-{}", candidate.version);
         if should_update_link(&current.cuda_link, &current.toolkits) {
-            steps.push(PlanStep::new(
-                "Update the arc-managed /usr/local/cuda symlink",
-                CommandSpec::sudo("ln", ["-sfn", &target_dir, "/usr/local/cuda"]),
-            ));
+            steps.push(
+                PlanStep::new(
+                    "Update the arc-managed /usr/local/cuda symlink",
+                    CommandSpec::sudo("ln", ["-sfn", &target_dir, "/usr/local/cuda"]),
+                )
+                .in_stage(&toolkit_stage),
+            );
         }
-        steps.push(PlanStep::new(
-            "Verify the target CUDA Toolkit with nvcc",
-            CommandSpec::new(&format!("{target_dir}/bin/nvcc"), ["--version"]),
-        ));
-        steps.push(PlanStep::new(
-            "Verify the target CUDA Toolkit directory",
-            CommandSpec::new("test", ["-d", &target_dir]),
-        ));
+        steps.push(
+            PlanStep::new(
+                "Verify the target CUDA Toolkit with nvcc",
+                CommandSpec::new(&format!("{target_dir}/bin/nvcc"), ["--version"]),
+            )
+            .in_stage(&toolkit_verification_stage),
+        );
+        steps.push(
+            PlanStep::new(
+                "Verify the target CUDA Toolkit directory",
+                CommandSpec::new("test", ["-d", &target_dir]),
+            )
+            .in_stage(&toolkit_verification_stage),
+        );
         if should_update_link(&current.cuda_link, &current.toolkits) {
-            steps.push(PlanStep::new(
-                "Verify the managed /usr/local/cuda symlink",
-                CommandSpec::new("test", ["-L", "/usr/local/cuda"]),
-            ));
+            steps.push(
+                PlanStep::new(
+                    "Verify the managed /usr/local/cuda symlink",
+                    CommandSpec::new("test", ["-L", "/usr/local/cuda"]),
+                )
+                .in_stage(&toolkit_verification_stage),
+            );
         }
     }
 
@@ -469,30 +535,113 @@ pub fn build_plan(
             toolkit_versions(&current.toolkits)
         )
     };
+    let driver_flavor_label = match current.status.driver.flavor() {
+        Some(DriverFlavorState::Open) => "NVIDIA Open driver",
+        Some(DriverFlavorState::Proprietary) => "NVIDIA proprietary driver",
+        _ => "NVIDIA driver",
+    };
+    let upgraded_driver_version = driver_target
+        .as_deref()
+        .and_then(upstream_driver_version)
+        .or(driver_target.as_deref());
+    let completion_message = match (driver_changes, toolkit_candidate.as_ref()) {
+        (true, Some(toolkit)) => format!(
+            "{driver_flavor_label} {} and CUDA Toolkit {} upgraded and verified.",
+            upgraded_driver_version.unwrap_or("target version"),
+            toolkit.version
+        ),
+        (true, None) => format!(
+            "{driver_flavor_label} {} upgraded and verified.",
+            upgraded_driver_version.unwrap_or("target version")
+        ),
+        (false, Some(toolkit)) => {
+            format!("CUDA Toolkit {} upgraded and verified.", toolkit.version)
+        }
+        (false, None) => "Selected NVIDIA components are already current.".into(),
+    };
 
     Ok(OperationPlan {
         title: "NVIDIA Upgrade Plan".into(),
         details: vec![
-            PlanDetail::new("OS / architecture", format!("{} / {}", os.display_name(), os.architecture)),
+            PlanDetail::new(
+                "OS / architecture",
+                format!("{} / {}", os.display_name(), os.architecture),
+            ),
             PlanDetail::new("Kernel", &current.kernel),
             PlanDetail::new("Package manager", os.package_manager().to_string()),
             PlanDetail::new("Repository", repository.base_url.clone()),
-            PlanDetail::new("Release validation", format!("repository-compatible {}; NVIDIA validated: {}; arc tested: {}", repository.family, if repository.nvidia_validated { "yes" } else { "no" }, if repository.arc_tested { "yes" } else { "no" })),
-            PlanDetail::new("GPU policy", if legacy { "Maxwell/Pascal/Volta: proprietary R580, CUDA 12.x maximum" } else { "Turing or newer: preserve installed flavor, latest compatible branch" }),
-            PlanDetail::new("Current driver", format!("{}; {flavor}; {branch}; package version {driver_current}; loaded version {}", current.status.driver.description(), current.status.driver_version.as_deref().unwrap_or("not loaded"))),
+            PlanDetail::new(
+                "Release validation",
+                format!(
+                    "repository-compatible {}; NVIDIA validated: {}; arc tested: {}",
+                    repository.family,
+                    if repository.nvidia_validated {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    if repository.arc_tested { "yes" } else { "no" }
+                ),
+            ),
+            PlanDetail::new(
+                "GPU policy",
+                if legacy {
+                    "Maxwell/Pascal/Volta: proprietary R580, CUDA 12.x maximum"
+                } else {
+                    "Turing or newer: preserve installed flavor, latest compatible branch"
+                },
+            ),
+            PlanDetail::new(
+                "Current driver",
+                format!(
+                    "{}; {flavor}; {branch}; package version {driver_current}; loaded version {}",
+                    current.status.driver.description(),
+                    current
+                        .status
+                        .driver_version
+                        .as_deref()
+                        .unwrap_or("not loaded")
+                ),
+            ),
             PlanDetail::new("Target driver", driver_detail),
-            PlanDetail::new("Current CUDA Toolkits", if current.toolkits.is_empty() { "none".into() } else { toolkit_versions(&current.toolkits) }),
+            PlanDetail::new(
+                "Current CUDA Toolkits",
+                if current.toolkits.is_empty() {
+                    "none".into()
+                } else {
+                    toolkit_versions(&current.toolkits)
+                },
+            ),
             PlanDetail::new("Target CUDA Toolkit", toolkit_detail),
-            PlanDetail::new("Package restrictions", if current.restrictions.is_empty() { "none detected".into() } else { current.restrictions.join(" | ") }),
-            PlanDetail::new("Kernel development packages", if current.kernel_headers { "matching running kernel detected" } else { "will be installed before driver upgrade" }),
-            PlanDetail::new("Secure Boot", current.secure_boot.map_or("unknown", |v| if v { "enabled" } else { "disabled" })),
+            PlanDetail::new(
+                "Package restrictions",
+                if current.restrictions.is_empty() {
+                    "none detected".into()
+                } else {
+                    current.restrictions.join(" | ")
+                },
+            ),
+            PlanDetail::new(
+                "Kernel development packages",
+                if current.kernel_headers {
+                    "matching running kernel detected"
+                } else {
+                    "will be installed before driver upgrade"
+                },
+            ),
+            PlanDetail::new(
+                "Secure Boot",
+                current
+                    .secure_boot
+                    .map_or("unknown", |v| if v { "enabled" } else { "disabled" }),
+            ),
             PlanDetail::new("/usr/local/cuda", cuda_link_description(&current.cuda_link)),
         ],
         devices: current.status.devices.clone(),
         steps,
         confirmation_warning: String::new(),
-        completion_message: "Upgrade completed and package versions were verified.".into(),
-        reboot_message: driver_changes.then(|| "Reboot required: the running NVIDIA module may remain at the previous version until reboot.".into()),
+        completion_message,
+        next_step: driver_changes.then_some(NextStep::LoadNvidiaDriver),
     })
 }
 

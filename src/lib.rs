@@ -28,13 +28,14 @@ pub const EXECUTION_FAILURE_EXIT_CODE: u8 = 2;
 
 pub fn run(cli: Cli) -> Result<ExitStatus> {
     let verbose = cli.verbose;
+    let show_commands = cli.show_commands || verbose;
     match cli.command {
         Command::Install(args) => {
-            commands::install::run(args, verbose).map(|_| ExitStatus::Success)
+            commands::install::run(args, verbose, show_commands).map(|_| ExitStatus::Success)
         }
         Command::Status(args) => commands::status::run(args, verbose).map(|_| ExitStatus::Success),
         Command::Upgrade(args) => {
-            commands::upgrade::run(args, verbose).map(|outcome| match outcome {
+            commands::upgrade::run(args, verbose, show_commands).map(|outcome| match outcome {
                 commands::upgrade::UpgradeOutcome::Success => ExitStatus::Success,
                 commands::upgrade::UpgradeOutcome::Unavailable => ExitStatus::UpgradeUnavailable,
             })
@@ -44,7 +45,7 @@ pub fn run(cli: Cli) -> Result<ExitStatus> {
             commands::doctor::DoctorOutcome::ErrorsFound => ExitStatus::DiagnosticErrors,
         }),
         Command::Uninstall(args) => {
-            commands::uninstall::run(args, verbose).map(|_| ExitStatus::Success)
+            commands::uninstall::run(args, verbose, show_commands).map(|_| ExitStatus::Success)
         }
     }
 }

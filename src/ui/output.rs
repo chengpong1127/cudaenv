@@ -8,17 +8,17 @@ use crate::model::{
         DiagnosticSection, DiagnosticStatus, Diagnostics, DriverFlavorState, DriverInstallation,
         DriverPackageScope, DriverRuntimeState, ProviderStatus,
     },
-    operation::OperationPlan,
+    operation::{NextStep, OperationPlan},
     system::OsInfo,
 };
 use crate::platform::command::ExecutionEvent;
 use crate::providers::nvidia::runtime;
 
-pub fn operation_plan(plan: &OperationPlan) {
-    print!("{}", format_operation_plan(plan));
+pub fn operation_plan(plan: &OperationPlan, show_commands: bool) {
+    print!("{}", format_operation_plan(plan, show_commands));
 }
 
-pub fn format_operation_plan(plan: &OperationPlan) -> String {
+pub fn format_operation_plan(plan: &OperationPlan, show_commands: bool) -> String {
     let mut rendered = String::new();
     let label_width = plan
         .details
@@ -35,13 +35,20 @@ pub fn format_operation_plan(plan: &OperationPlan) -> String {
     }
     for detail in &plan.details {
         let padded_label = format!("{:<label_width$}", detail.label);
-        writeln!(
-            rendered,
-            "  {}  {}",
-            style(padded_label).dim(),
-            detail.value
-        )
-        .unwrap();
+        for (index, line) in detail.value.lines().enumerate() {
+            let label = if index == 0 {
+                padded_label.as_str()
+            } else {
+                ""
+            };
+            writeln!(
+                rendered,
+                "  {}  {}",
+                style(format!("{label:<label_width$}")).dim(),
+                line
+            )
+            .unwrap();
+        }
     }
     if !plan.devices.is_empty() {
         let padded_label = format!("{:<label_width$}", "GPU(s)");
@@ -63,7 +70,7 @@ pub fn format_operation_plan(plan: &OperationPlan) -> String {
         }
     }
 
-    let step_count = match plan.steps.len() {
+    let step_count = match plan.stage_count() {
         1 => "1 step".to_owned(),
         count => format!("{count} steps"),
     };
@@ -83,21 +90,30 @@ pub fn format_operation_plan(plan: &OperationPlan) -> String {
         )
         .unwrap();
     } else {
-        for (index, step) in plan.steps.iter().enumerate() {
-            writeln!(
-                rendered,
-                "  {}  {}",
-                style(format!("{:02}", index + 1)).cyan().bold(),
-                style(&step.description).bold()
-            )
-            .unwrap();
-            writeln!(
-                rendered,
-                "      {} {}",
-                style("$").dim(),
-                style(step.command.display()).dim()
-            )
-            .unwrap();
+        let mut stage_index = 0;
+        for (command_index, step) in plan.steps.iter().enumerate() {
+            let (_, first, _) = plan.stage_position(command_index);
+            if first {
+                stage_index += 1;
+            }
+            if first {
+                writeln!(
+                    rendered,
+                    "  {}  {}",
+                    style(format!("{stage_index:02}")).cyan().bold(),
+                    style(&step.stage.title).bold()
+                )
+                .unwrap();
+            }
+            if show_commands {
+                writeln!(
+                    rendered,
+                    "      {} {}",
+                    style("$").dim(),
+                    style(step.command.display()).dim()
+                )
+                .unwrap();
+            }
         }
     }
     if !plan.confirmation_warning.is_empty() {
@@ -116,30 +132,59 @@ pub fn format_operation_plan(plan: &OperationPlan) -> String {
 }
 
 pub fn operation_completed(plan: &OperationPlan) {
-    println!(
-        "\n  {}  {}",
+    print!("{}", format_operation_completed(plan));
+}
+
+pub fn format_operation_completed(plan: &OperationPlan) -> String {
+    let mut rendered = String::new();
+    writeln!(
+        rendered,
+        "\n  {}  {}\n",
         style("✓").green().bold(),
         style(&plan.completion_message).green().bold()
-    );
-    if let Some(message) = &plan.reboot_message {
-        println!(
-            "  {}  {}",
-            style("↻").yellow().bold(),
-            style(message).yellow()
-        );
+    )
+    .unwrap();
+    if let Some(next_step) = plan.next_step {
+        writeln!(rendered, "  {}\n", section_label("Next step")).unwrap();
+        match next_step {
+            NextStep::LoadNvidiaDriver => {
+                writeln!(
+                    rendered,
+                    "    Reboot the system to load the NVIDIA driver:\n"
+                )
+                .unwrap();
+                writeln!(rendered, "      sudo reboot\n").unwrap();
+                writeln!(rendered, "    After rebooting, run:\n").unwrap();
+                writeln!(rendered, "      arc status\n").unwrap();
+            }
+            NextStep::RebootBeforeNvidiaInstall => {
+                writeln!(
+                    rendered,
+                    "    Reboot the system before installing another NVIDIA driver:\n"
+                )
+                .unwrap();
+                writeln!(rendered, "      sudo reboot\n").unwrap();
+            }
+        }
     }
-    println!();
+    rendered
 }
 
 pub struct ExecutionReporter {
     verbose: bool,
+    stage_total: usize,
+    positions: Vec<(usize, bool, bool)>,
     progress: Option<ProgressBar>,
 }
 
 impl ExecutionReporter {
-    pub fn new(verbose: bool) -> Self {
+    pub fn new(plan: &OperationPlan, verbose: bool) -> Self {
         Self {
             verbose,
+            stage_total: plan.stage_count(),
+            positions: (0..plan.steps.len())
+                .map(|index| plan.stage_position(index))
+                .collect(),
             progress: None,
         }
     }
@@ -147,15 +192,22 @@ impl ExecutionReporter {
     pub fn report(&mut self, event: ExecutionEvent<'_>) {
         match event {
             ExecutionEvent::Started { index, total, step } => {
+                debug_assert!(index < total);
                 if index == 0 {
                     println!("\n  {}\n", section_label("Applying changes"));
+                }
+                let (stage_index, first, _) = self.positions[index];
+                if !first {
+                    return;
                 }
                 if self.verbose {
                     println!(
                         "  {}  {}  {}",
                         style("◆").cyan(),
-                        style(format!("{}/{}", index + 1, total)).cyan().bold(),
-                        style(&step.description).bold()
+                        style(format!("{}/{}", stage_index + 1, self.stage_total))
+                            .cyan()
+                            .bold(),
+                        style(&step.stage.running).bold()
                     );
                 } else {
                     let progress =
@@ -167,10 +219,15 @@ impl ExecutionReporter {
                         .expect("static progress template must be valid")
                         .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
                     );
-                    progress.set_prefix(format!("{}/{}", index + 1, total));
-                    progress.set_message(format!("{}...", step.description));
+                    progress.set_prefix(format!("{}/{}", stage_index + 1, self.stage_total));
+                    progress.set_message(step.stage.running.clone());
                     if progress.is_hidden() {
-                        println!("  {}/{} {}...", index + 1, total, step.description);
+                        println!(
+                            "  {}/{} {}",
+                            stage_index + 1,
+                            self.stage_total,
+                            step.stage.running
+                        );
                     } else {
                         progress.enable_steady_tick(Duration::from_millis(80));
                         self.progress = Some(progress);
@@ -178,21 +235,28 @@ impl ExecutionReporter {
                 }
             }
             ExecutionEvent::Completed { index, total, step } => {
+                debug_assert!(index < total);
+                let (stage_index, _, last) = self.positions[index];
+                if !last {
+                    return;
+                }
                 self.clear();
                 println!(
                     "  {}  {}  {}",
                     style("✓").green().bold(),
-                    style(format!("{}/{}", index + 1, total)).dim(),
-                    style(format!("{} complete", step.description)).green()
+                    style(format!("{}/{}", stage_index + 1, self.stage_total)).dim(),
+                    style(&step.stage.success).green()
                 );
             }
             ExecutionEvent::Failed { index, total, step } => {
+                debug_assert!(index < total);
+                let (stage_index, _, _) = self.positions[index];
                 self.clear();
                 println!(
                     "  {}  {}  {}\n",
                     style("✗").red().bold(),
-                    style(format!("{}/{}", index + 1, total)).dim(),
-                    style(format!("{} failed", step.description)).red().bold()
+                    style(format!("{}/{}", stage_index + 1, self.stage_total)).dim(),
+                    style(&step.stage.failure).red().bold()
                 );
             }
         }
@@ -619,7 +683,7 @@ mod tests {
             DiagnosticCheck, DiagnosticId, DiagnosticSection, DiagnosticStatus, DriverFlavorState,
             DriverInstallation, DriverModuleInfo, DriverPackageScope, FixPlan,
         },
-        operation::{OperationPlan, PlanDetail, PlanStep},
+        operation::{NextStep, OperationPlan, PlanDetail, PlanStage, PlanStep},
         system::{Distribution, OsInfo},
     };
 
@@ -635,10 +699,10 @@ mod tests {
             )],
             confirmation_warning: "No changes until confirmation.".into(),
             completion_message: "Installation completed.".into(),
-            reboot_message: None,
+            next_step: None,
         };
 
-        let rendered = format_operation_plan(&plan);
+        let rendered = format_operation_plan(&plan, true);
         let output = console::strip_ansi_codes(&rendered);
 
         for expected in [
@@ -658,6 +722,86 @@ mod tests {
                 "missing {expected:?} in {output}"
             );
         }
+    }
+
+    #[test]
+    fn operation_plan_hides_commands_by_default_and_reveals_them_on_request() {
+        let plan = OperationPlan {
+            title: "Plan".into(),
+            details: vec![],
+            devices: vec![],
+            steps: vec![PlanStep::new(
+                "Install packages",
+                CommandSpec::sudo("apt-get", ["install", "one", "two", "three"]),
+            )],
+            confirmation_warning: String::new(),
+            completion_message: String::new(),
+            next_step: None,
+        };
+
+        let compact = console::strip_ansi_codes(&format_operation_plan(&plan, false)).into_owned();
+        let expanded = console::strip_ansi_codes(&format_operation_plan(&plan, true)).into_owned();
+        assert!(compact.contains("Install packages"));
+        assert!(!compact.contains("apt-get"));
+        assert!(expanded.contains("$ sudo apt-get install one two three"));
+    }
+
+    #[test]
+    fn grouped_commands_render_as_one_user_facing_stage() {
+        let stage = PlanStage::new(
+            "Configure the repository",
+            "Configuring the repository...",
+            "Configured the repository",
+            "Could not configure the repository",
+        );
+        let plan = OperationPlan {
+            title: "Plan".into(),
+            details: vec![],
+            devices: vec![],
+            steps: vec![
+                PlanStep::new("Download key", CommandSpec::new("curl", ["key"])).in_stage(&stage),
+                PlanStep::new("Install key", CommandSpec::new("install", ["key"])).in_stage(&stage),
+            ],
+            confirmation_warning: String::new(),
+            completion_message: String::new(),
+            next_step: None,
+        };
+
+        let output = console::strip_ansi_codes(&format_operation_plan(&plan, false)).into_owned();
+        assert!(output.contains("CHANGES  1 step"));
+        assert_eq!(output.matches("Configure the repository").count(), 1);
+        assert_eq!(plan.stage_position(0), (0, true, false));
+        assert_eq!(plan.stage_position(1), (0, false, true));
+        assert_eq!(
+            plan.steps[1].stage.failure,
+            "Could not configure the repository"
+        );
+    }
+
+    #[test]
+    fn completion_renders_next_step_only_when_requested() {
+        let mut plan = OperationPlan {
+            title: "Plan".into(),
+            details: vec![],
+            devices: vec![],
+            steps: vec![],
+            confirmation_warning: String::new(),
+            completion_message: "NVIDIA Open driver installed and verified.".into(),
+            next_step: None,
+        };
+        assert!(!format_operation_completed(&plan).contains("NEXT STEP"));
+
+        plan.next_step = Some(NextStep::LoadNvidiaDriver);
+        let install = console::strip_ansi_codes(&format_operation_completed(&plan)).into_owned();
+        assert!(install.contains("NEXT STEP"));
+        assert!(install.contains("Reboot the system to load the NVIDIA driver"));
+        assert!(install.contains("arc status"));
+        assert!(!install.contains("Ubuntu"));
+
+        plan.next_step = Some(NextStep::RebootBeforeNvidiaInstall);
+        let uninstall = console::strip_ansi_codes(&format_operation_completed(&plan)).into_owned();
+        assert!(uninstall.contains("before installing another NVIDIA driver"));
+        assert!(!uninstall.contains("arc status"));
     }
 
     #[test]
