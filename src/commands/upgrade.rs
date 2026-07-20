@@ -18,10 +18,10 @@ pub fn run(args: UpgradeArgs) -> Result<UpgradeOutcome> {
     let mut plan = match upgrade::plan(&os::detect()?, &options) {
         Ok(plan) => plan,
         Err(error) if upgrade::is_actionable(&error) => {
-            eprintln!(
+            output::unavailable(&format!(
                 "Upgrade unavailable: {}",
                 upgrade::actionable_message(&error)
-            );
+            ));
             return Ok(UpgradeOutcome::Unavailable);
         }
         Err(error) => return Err(error),

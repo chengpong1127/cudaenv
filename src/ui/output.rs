@@ -27,15 +27,7 @@ pub fn format_operation_plan(plan: &OperationPlan) -> String {
         .max()
         .unwrap_or(0);
 
-    writeln!(rendered).unwrap();
-    writeln!(
-        rendered,
-        "  {}  {}",
-        style("arc").cyan().bold(),
-        style(&plan.title).bold()
-    )
-    .unwrap();
-    writeln!(rendered, "  {}", style("─".repeat(52)).dim()).unwrap();
+    header(&mut rendered, &plan.title);
 
     if !plan.details.is_empty() || !plan.devices.is_empty() {
         writeln!(rendered, "\n  {}", section_label("Environment")).unwrap();
@@ -178,6 +170,26 @@ pub fn cancelled(action: &str) {
     );
 }
 
+pub fn unavailable(message: &str) {
+    eprintln!(
+        "\n  {}  {}\n",
+        style("!").yellow().bold(),
+        style(message).yellow().bold()
+    );
+}
+
+fn header(rendered: &mut String, title: &str) {
+    writeln!(rendered).unwrap();
+    writeln!(
+        rendered,
+        "  {}  {}",
+        style("arc").cyan().bold(),
+        style(title).bold()
+    )
+    .unwrap();
+    writeln!(rendered, "  {}", style("─".repeat(52)).dim()).unwrap();
+}
+
 fn section_label(label: &str) -> String {
     style(label.to_uppercase()).cyan().bold().to_string()
 }
@@ -187,7 +199,9 @@ pub fn system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: bool) {
 }
 
 pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: bool) -> String {
-    let mut rendered = String::from("GPU Environment\n\n");
+    let mut rendered = String::new();
+    header(&mut rendered, "GPU Environment");
+    writeln!(rendered, "\n  {}", section_label("Status")).unwrap();
     status_row(&mut rendered, "OS", &os.display_name());
     for status in providers {
         status_row(&mut rendered, "GPU", &grouped_devices(status));
@@ -237,7 +251,7 @@ pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: 
         );
 
         if verbose {
-            writeln!(rendered, "\nTechnical details").unwrap();
+            writeln!(rendered, "\n  {}", section_label("Technical details")).unwrap();
             technical_row(
                 &mut rendered,
                 "Kernel version",
@@ -285,21 +299,25 @@ pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: 
         {
             writeln!(
                 rendered,
-                "\n⚠ {}",
-                runtime::status_warning(status.driver_runtime_state)
+                "\n  {}  {}",
+                style("!").yellow().bold(),
+                style(runtime::status_warning(status.driver_runtime_state)).yellow()
             )
             .unwrap();
         }
     }
+    writeln!(rendered).unwrap();
     rendered
 }
 
 fn status_row(rendered: &mut String, label: &str, value: &str) {
-    writeln!(rendered, "{label:<20}{value}").unwrap();
+    let padded_label = format!("{label:<19}");
+    writeln!(rendered, "  {}  {value}", style(padded_label).dim()).unwrap();
 }
 
 fn technical_row(rendered: &mut String, label: &str, value: &str) {
-    writeln!(rendered, "{label:<24}{value}").unwrap();
+    let padded_label = format!("{label:<22}");
+    writeln!(rendered, "  {}  {value}", style(padded_label).dim()).unwrap();
 }
 
 fn grouped_devices(status: &ProviderStatus) -> String {
@@ -393,26 +411,35 @@ pub fn diagnostics(diagnostics: &Diagnostics) {
 
 pub fn format_diagnostics(diagnostics: &Diagnostics) -> String {
     let mut rendered = String::new();
-    writeln!(rendered, "{} Diagnostics", diagnostics.vendor).unwrap();
+    header(
+        &mut rendered,
+        &format!("{} Diagnostics", diagnostics.vendor),
+    );
     for section in [
         DiagnosticSection::Hardware,
         DiagnosticSection::OperatingSystem,
         DiagnosticSection::Driver,
         DiagnosticSection::CudaToolkit,
     ] {
-        writeln!(rendered, "\n{section}").unwrap();
+        writeln!(rendered, "\n  {}", section_label(&section.to_string())).unwrap();
         for check in diagnostics
             .checks
             .iter()
             .filter(|check| check.section == section)
         {
-            writeln!(rendered, "{} {}", mark(check.status), check.name).unwrap();
+            writeln!(
+                rendered,
+                "  {}  {}",
+                styled_mark(check.status),
+                style(&check.name).bold()
+            )
+            .unwrap();
             if check.status != DiagnosticStatus::Pass {
                 if let Some(problem) = &check.problem {
-                    writeln!(rendered, "  {problem}").unwrap();
+                    writeln!(rendered, "     {problem}").unwrap();
                 }
                 for evidence in &check.evidence {
-                    writeln!(rendered, "  Evidence: {evidence}").unwrap();
+                    writeln!(rendered, "     {}  {evidence}", style("Evidence").dim()).unwrap();
                 }
             }
         }
@@ -424,7 +451,8 @@ pub fn format_diagnostics(diagnostics: &Diagnostics) -> String {
             .any(|check| check.status == DiagnosticStatus::Warning);
         writeln!(
             rendered,
-            "\n{}",
+            "\n  {}  {}\n",
+            completion_mark(has_warnings),
             if has_warnings {
                 "Completed with warnings"
             } else {
@@ -434,27 +462,39 @@ pub fn format_diagnostics(diagnostics: &Diagnostics) -> String {
         .unwrap();
         return rendered;
     }
-    writeln!(rendered, "\nActionable fix plan").unwrap();
+    writeln!(rendered, "\n  {}", section_label("Actionable fix plan")).unwrap();
     for (index, cause) in diagnostics.fix_plan.causes.iter().enumerate() {
         writeln!(
             rendered,
-            "{}. Likely root cause: {} ({} confidence)",
+            "  {:02}  Likely root cause: {} ({} confidence)",
             index + 1,
             cause.title,
             cause.confidence
         )
         .unwrap();
         for evidence in &cause.evidence {
-            writeln!(rendered, "   Evidence: {evidence}").unwrap();
+            writeln!(rendered, "      {}  {evidence}", style("Evidence").dim()).unwrap();
         }
     }
     for (index, fix) in diagnostics.fix_plan.fixes.iter().enumerate() {
-        writeln!(rendered, "\n{}. {}", index + 1, fix.title).unwrap();
+        writeln!(
+            rendered,
+            "\n  {:02}  {}",
+            index + 1,
+            style(&fix.title).bold()
+        )
+        .unwrap();
         for command in &fix.commands {
-            writeln!(rendered, "   $ {}", command.display()).unwrap();
+            writeln!(
+                rendered,
+                "      {} {}",
+                style("$").dim(),
+                style(command.display()).dim()
+            )
+            .unwrap();
         }
         for step in &fix.manual_steps {
-            writeln!(rendered, "   - {step}").unwrap();
+            writeln!(rendered, "      {}  {step}", style("•").dim()).unwrap();
         }
     }
     if diagnostics
@@ -463,11 +503,17 @@ pub fn format_diagnostics(diagnostics: &Diagnostics) -> String {
         .iter()
         .any(|fix| !fix.manual_steps.is_empty())
     {
-        writeln!(rendered, "\nComplete the recommended manual actions above.").unwrap();
+        writeln!(
+            rendered,
+            "\n  {}  Complete the recommended manual actions above.\n",
+            style("!").yellow().bold()
+        )
+        .unwrap();
     } else {
         writeln!(
             rendered,
-            "\nNo fixes were executed. After completing the plan, rerun `arc doctor`."
+            "\n  {}  No fixes were executed. After completing the plan, rerun `arc doctor`.\n",
+            style("•").cyan().bold()
         )
         .unwrap();
     }
@@ -480,6 +526,23 @@ fn mark(status: DiagnosticStatus) -> &'static str {
         DiagnosticStatus::Warning => "⚠",
         DiagnosticStatus::Error => "✗",
         DiagnosticStatus::Skipped => "↷ skipped",
+    }
+}
+
+fn styled_mark(status: DiagnosticStatus) -> String {
+    match status {
+        DiagnosticStatus::Pass => style(mark(status)).green().bold().to_string(),
+        DiagnosticStatus::Warning => style(mark(status)).yellow().bold().to_string(),
+        DiagnosticStatus::Error => style(mark(status)).red().bold().to_string(),
+        DiagnosticStatus::Skipped => style(mark(status)).dim().to_string(),
+    }
+}
+
+fn completion_mark(has_warnings: bool) -> String {
+    if has_warnings {
+        style("!").yellow().bold().to_string()
+    } else {
+        style("✓").green().bold().to_string()
     }
 }
 
@@ -551,10 +614,11 @@ mod tests {
         };
         let output = format_diagnostics(&diagnostics);
         for expected in [
-            "Hardware",
-            "Operating System",
-            "Driver",
-            "CUDA Toolkit",
+            "arc  NVIDIA Diagnostics",
+            "HARDWARE",
+            "OPERATING SYSTEM",
+            "DRIVER",
+            "CUDA TOOLKIT",
             "✓",
             "⚠",
             "✗",
@@ -602,14 +666,15 @@ mod tests {
         let output = format_system_status(&os, &[status], false);
 
         for expected in [
-            "GPU Environment",
-            "OS                  Ubuntu 22.04",
-            "GPU                 2 × NVIDIA GeForce RTX 2080",
-            "Driver installation Managed · Open",
-            "Driver version      610.43.02",
-            "Driver runtime      Reboot likely required",
-            "CUDA Toolkit        Not installed",
-            "nvcc                Not found",
+            "arc  GPU Environment",
+            "STATUS",
+            "OS                   Ubuntu 22.04",
+            "GPU                  2 × NVIDIA GeForce RTX 2080",
+            "Driver installation  Managed · Open",
+            "Driver version       610.43.02",
+            "Driver runtime       Reboot likely required",
+            "CUDA Toolkit         Not installed",
+            "nvcc                 Not found",
             "Run `sudo reboot`, then rerun `arc status`.",
         ] {
             assert!(
@@ -634,7 +699,7 @@ mod tests {
         let output = format_system_status(&os, &[sample_status()], true);
 
         for expected in [
-            "Technical details",
+            "TECHNICAL DETAILS",
             "Kernel version          6.8.0-test",
             "Module path             /lib/modules/test/nvidia.ko",
             "Kernel module version   610.43.02",
