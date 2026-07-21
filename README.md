@@ -114,16 +114,36 @@ installation method first.
 
 ## Built with Codex and GPT-5.6
 
-Codex was used throughout Arc's development. It helped design the Rust
-architecture, implement system detection and installation planning, build
-diagnostics, create tests, and refine the CLI experience.
+Arc was built with Codex and GPT-5.6 as active development collaborators throughout the project.
 
-GPT-5.6 helped analyze NVIDIA documentation, Linux compatibility cases, driver
-edge cases, and implementation tradeoffs. Important decisions were validated
-against NVIDIA documentation and real Linux systems.
+### How Codex was used
 
-Arc does **not** use GPT-5.6 at runtime. Detection, planning, and execution are
-performed locally by the Rust CLI.
+Codex helped turn the project design into a working Rust CLI. It was used to:
+
+- Design and refactor Arc's module architecture.
+- Implement GPU, driver, operating-system, repository, and CUDA Toolkit detection.
+- Build installation, upgrade, uninstall, status, and diagnostic workflows.
+- Generate and improve unit and integration tests.
+- Review error handling, unsafe installation states, and edge cases.
+- Refine CLI output, prompts, operation plans, and user-facing diagnostics.
+
+For example, Codex helped restructure Arc's driver detection into explicit states for missing, package-managed, broken, and unmanaged installations. This allows Arc to avoid installing distribution packages over an NVIDIA runfile installation.
+
+### How GPT-5.6 was used
+
+GPT-5.6 was used primarily for technical reasoning, research synthesis, and product design. It helped:
+
+- Analyze NVIDIA's Linux installation documentation and repository structure.
+- Distinguish driver-only machine-learning environments from full CUDA development environments.
+- Design compatibility policies for GPU generations, driver branches, CUDA Toolkit versions, Linux distributions, and CPU architectures.
+- Identify failure cases involving Secure Boot, kernel headers, mixed GPU generations, unmanaged drivers, and incompatible Toolkit versions.
+- Review the CLI workflow from a user's perspective and simplify decisions that normally require NVIDIA-specific knowledge.
+
+### Human validation
+
+AI-generated suggestions were not accepted blindly. The architecture, compatibility rules, commands, and diagnostics were reviewed against official NVIDIA documentation and tested on real Linux systems.
+
+Arc does not call Codex or GPT-5.6 at runtime. All hardware detection, compatibility decisions, installation planning, and command execution happen locally in the Rust CLI.
 
 ## Supported Systems
 
