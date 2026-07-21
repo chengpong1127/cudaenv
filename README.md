@@ -87,6 +87,9 @@ with its original installation method first.
 
 ```bash
 arc status
+
+# Evaluate the stricter Toolkit and compiler requirements
+arc status --profile cuda-development
 ```
 
 `arc status` reports:
@@ -98,6 +101,14 @@ arc status
   prove they are manageable by arc
 - The active `nvcc` version and executable path separately, as informational
   PATH state
+- A compact readiness summary for the selected profile, including missing
+  requirements and the next `arc install` or `arc doctor` action
+
+The default `model-training` readiness check requires an operational NVIDIA
+driver runtime; frameworks such as PyTorch, TensorFlow, and JAX are installed
+separately. The `cuda-development` check additionally requires a system CUDA
+Toolkit and working `nvcc` before reporting that CUDA applications can be
+compiled and run.
 
 A Conda environment, environment module, custom `PATH`, or user-installed
 `nvcc` is never treated as proof that an APT, RPM, or Zypper Toolkit package is

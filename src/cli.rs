@@ -31,7 +31,11 @@ pub enum Command {
 }
 
 #[derive(Args, Debug)]
-pub struct StatusArgs {}
+pub struct StatusArgs {
+    /// Expected workload; CUDA development also requires the Toolkit and nvcc.
+    #[arg(long, value_enum, default_value_t = UsageProfile::ModelTraining)]
+    pub profile: UsageProfile,
+}
 
 #[derive(Args, Debug)]
 pub struct UpgradeArgs {
@@ -100,8 +104,24 @@ mod tests {
         for flag in ["-v", "--verbose"] {
             let cli = Cli::try_parse_from(["arc", "status", flag]).unwrap();
             assert!(cli.verbose);
-            assert!(matches!(cli.command, Command::Status(StatusArgs {})));
+            assert!(matches!(
+                cli.command,
+                Command::Status(StatusArgs {
+                    profile: UsageProfile::ModelTraining
+                })
+            ));
         }
+    }
+
+    #[test]
+    fn status_accepts_a_readiness_profile() {
+        let cli = Cli::try_parse_from(["arc", "status", "--profile", "cuda-development"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Status(StatusArgs {
+                profile: UsageProfile::CudaDevelopment
+            })
+        ));
     }
 
     #[test]

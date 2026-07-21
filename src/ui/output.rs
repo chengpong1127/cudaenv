@@ -9,6 +9,7 @@ use crate::model::{
         DriverPackageScope, DriverRuntimeState, ProviderStatus,
     },
     operation::{NextStep, OperationPlan},
+    profile::{InstallProfile, ProfileReadiness},
     system::OsInfo,
 };
 use crate::platform::command::ExecutionEvent;
@@ -321,11 +322,21 @@ fn section_label(label: &str) -> String {
     style(label.to_uppercase()).cyan().bold().to_string()
 }
 
-pub fn system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: bool) {
-    print!("{}", format_system_status(os, providers, verbose));
+pub fn system_status(
+    os: &OsInfo,
+    providers: &[ProviderStatus],
+    profile: InstallProfile,
+    verbose: bool,
+) {
+    print!("{}", format_system_status(os, providers, profile, verbose));
 }
 
-pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: bool) -> String {
+pub fn format_system_status(
+    os: &OsInfo,
+    providers: &[ProviderStatus],
+    profile: InstallProfile,
+    verbose: bool,
+) -> String {
     let mut rendered = String::new();
     header(&mut rendered, "GPU Environment");
     writeln!(rendered, "\n  {}", section_label("Status")).unwrap();
@@ -431,6 +442,57 @@ pub fn format_system_status(os: &OsInfo, providers: &[ProviderStatus], verbose: 
                 style(runtime::status_warning(status.driver_runtime_state)).yellow()
             )
             .unwrap();
+        }
+    }
+    write!(
+        rendered,
+        "{}",
+        format_profile_readiness(&profile.readiness(providers))
+    )
+    .unwrap();
+    rendered
+}
+
+pub fn format_profile_readiness(readiness: &ProfileReadiness) -> String {
+    let mut rendered = String::new();
+    writeln!(rendered, "\n  {}", section_label("Profile readiness")).unwrap();
+    let profile = match readiness.profile {
+        InstallProfile::ModelTraining => "Model training",
+        InstallProfile::CudaDevelopment => "CUDA development",
+    };
+    if readiness.ready() {
+        writeln!(
+            rendered,
+            "  {}  {} · {profile}",
+            style("✓").green().bold(),
+            style("READY").green().bold()
+        )
+        .unwrap();
+        match readiness.profile {
+            InstallProfile::ModelTraining => {
+                writeln!(rendered, "     Ready for GPU-accelerated frameworks such as PyTorch, TensorFlow, and JAX.").unwrap();
+                writeln!(
+                    rendered,
+                    "     {}",
+                    style("Framework installation is managed separately.").dim()
+                )
+                .unwrap();
+            }
+            InstallProfile::CudaDevelopment => {
+                writeln!(rendered, "     You can compile and run CUDA applications.").unwrap();
+            }
+        }
+    } else {
+        writeln!(
+            rendered,
+            "  {}  {} · {profile}",
+            style("✗").red().bold(),
+            style("NOT READY").red().bold()
+        )
+        .unwrap();
+        writeln!(rendered, "     Missing: {}", readiness.missing.join(", ")).unwrap();
+        if let Some(action) = readiness.next_action {
+            writeln!(rendered, "     Next: {action}").unwrap();
         }
     }
     writeln!(rendered).unwrap();
@@ -636,13 +698,6 @@ pub fn format_diagnostics(diagnostics: &Diagnostics) -> String {
             style("!").yellow().bold()
         )
         .unwrap();
-    } else {
-        writeln!(
-            rendered,
-            "\n  {}  No fixes were executed. After completing the plan, rerun `arc doctor`.\n",
-            style("•").cyan().bold()
-        )
-        .unwrap();
     }
     rendered
 }
@@ -805,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_output_has_sections_marks_and_rerun_instruction() {
+    fn diagnostic_output_has_sections_without_a_rerun_instruction() {
         let diagnostics = Diagnostics {
             vendor: GpuVendor::Nvidia,
             checks: vec![
@@ -830,13 +885,15 @@ mod tests {
             "⚠",
             "✗",
             "↷ skipped",
-            "rerun `arc doctor`",
         ] {
             assert!(
                 output.contains(expected),
                 "missing {expected:?} in {output}"
             );
         }
+        assert!(!output.contains("After completing the plan"));
+        assert!(!output.contains("rerun `arc doctor`"));
+        assert!(!output.contains("No fixes were executed"));
     }
 
     #[test]
@@ -870,7 +927,7 @@ mod tests {
             is_wsl: false,
         };
         let status = sample_status();
-        let output = format_system_status(&os, &[status], false);
+        let output = format_system_status(&os, &[status], InstallProfile::ModelTraining, false);
 
         for expected in [
             "arc  GPU Environment",
@@ -883,6 +940,10 @@ mod tests {
             "CUDA Toolkit         Not installed",
             "nvcc                 Not found",
             "Run `sudo reboot`, then rerun `arc status`.",
+            "PROFILE READINESS",
+            "NOT READY · Model training",
+            "Missing: operational NVIDIA driver runtime",
+            "Next: arc doctor --profile model-training",
         ] {
             assert!(
                 output.contains(expected),
@@ -903,7 +964,8 @@ mod tests {
             architecture: "x86_64".into(),
             is_wsl: false,
         };
-        let output = format_system_status(&os, &[sample_status()], true);
+        let output =
+            format_system_status(&os, &[sample_status()], InstallProfile::ModelTraining, true);
 
         for expected in [
             "TECHNICAL DETAILS",
@@ -921,6 +983,49 @@ mod tests {
         }
         assert!(!output.contains("alias:"));
         assert!(!output.contains("depends:"));
+    }
+
+    #[test]
+    fn ready_profile_summaries_state_capabilities_without_claiming_framework_installation() {
+        let mut status = sample_status();
+        status.driver_version = Some("610.43.02".into());
+        status.driver_runtime_operational = true;
+        status.driver_runtime_state = DriverRuntimeState::Operational;
+
+        let model = console::strip_ansi_codes(&format_profile_readiness(
+            &InstallProfile::ModelTraining.readiness(&[status.clone()]),
+        ))
+        .into_owned();
+        assert!(model.contains("READY · Model training"));
+        assert!(model.contains(
+            "Ready for GPU-accelerated frameworks such as PyTorch, TensorFlow, and JAX."
+        ));
+        assert!(model.contains("Framework installation is managed separately."));
+
+        status
+            .toolkits
+            .push(crate::model::environment::ToolkitStatus {
+                name: "System-managed CUDA Toolkit".into(),
+                version: Some("13.3".into()),
+                executable_path: Some("/usr/local/cuda-13.3/bin/nvcc".into()),
+                source: crate::model::environment::ToolkitSource::SystemPackageManager,
+                packages: vec!["cuda-toolkit-13-3".into()],
+                manageable: true,
+            });
+        status.active_toolkit = Some(crate::model::environment::ToolkitStatus {
+            name: "Active nvcc".into(),
+            version: Some("13.3".into()),
+            executable_path: Some("/usr/local/cuda/bin/nvcc".into()),
+            source: crate::model::environment::ToolkitSource::ActivePath,
+            packages: vec![],
+            manageable: false,
+        });
+        let cuda = console::strip_ansi_codes(&format_profile_readiness(
+            &InstallProfile::CudaDevelopment.readiness(&[status]),
+        ))
+        .into_owned();
+        assert!(cuda.contains("READY · CUDA development"));
+        assert!(cuda.contains("You can compile and run CUDA applications."));
     }
 
     fn sample_status() -> ProviderStatus {

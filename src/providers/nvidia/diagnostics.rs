@@ -632,7 +632,7 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
         DriverInstallation::Unmanaged { evidence, .. } => (
             vec![],
             vec![format!(
-                "Do not use arc to overwrite this installation (evidence: {}). Repair or remove it with the original installation method and then rerun arc doctor.",
+                "Do not use arc to overwrite this installation (evidence: {}). Repair or remove it with the original installation method.",
                 evidence
                     .iter()
                     .map(ToString::to_string)
@@ -640,13 +640,7 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
                     .join("; ")
             )],
         ),
-        _ => (
-            vec![CommandSpec::new(
-                "arc",
-                ["install", "--profile", "model-training", "--dry-run"],
-            )],
-            vec![],
-        ),
+        _ => (vec![arc_install_command()], vec![]),
     };
     let repair_commands = managed_driver_repair_commands(e, &prerequisites);
     let (symlink_commands, symlink_steps) = cuda_symlink_repair(e);
@@ -657,7 +651,6 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
             vec![],
             vec![
                 "Run `sudo reboot`.".into(),
-                "After the machine starts again, run `arc doctor`.".into(),
                 "If the module still does not load after rebooting, run `sudo modprobe nvidia` and inspect the kernel logs reported by `arc doctor`.".into(),
             ],
             1,
@@ -690,10 +683,7 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
         fix(
             FixId::UpgradeDriver,
             "Upgrade the managed NVIDIA driver",
-            vec![CommandSpec::new(
-                "arc",
-                ["install", "--profile", "model-training", "--dry-run"],
-            )],
+            vec![arc_install_command()],
             20,
         ),
         fix(
@@ -709,16 +699,13 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
                 "dkms",
                 ["autoinstall", "-k", &e.kernel_release],
             )],
-            vec!["If DKMS cannot build the matching module, reinstall the managed NVIDIA driver packages, then rerun `arc doctor`.".into()],
+            vec!["If DKMS cannot build the matching module, reinstall the managed NVIDIA driver packages.".into()],
             40,
         ),
         fix(
             FixId::InstallToolkit,
             "Install or repair the CUDA Toolkit",
-            vec![CommandSpec::new(
-                "arc",
-                ["install", "--profile", "cuda-development", "--dry-run"],
-            )],
+            vec![arc_install_command()],
             50,
         ),
         fix_with_manual(
@@ -742,7 +729,7 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
             FixId::ResolveSecureBoot,
             "Enroll the NVIDIA module signing key or disable Secure Boot",
             vec![],
-            vec!["Enroll the distribution/NVIDIA module signing key (MOK), or disable Secure Boot in firmware, then reboot and rerun `arc doctor`.".into()],
+            vec!["Enroll the distribution/NVIDIA module signing key (MOK), or disable Secure Boot in firmware, then reboot.".into()],
             85,
         ),
         fix(
@@ -761,6 +748,10 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
             90,
         ),
     ])
+}
+
+fn arc_install_command() -> CommandSpec {
+    CommandSpec::new("arc", ["install"])
 }
 
 fn driver_packages(driver: &DriverInstallation) -> &[String] {
@@ -1319,5 +1310,24 @@ mod tests {
             .find(|fix| fix.id == FixId::RepairCudaSymlink)
             .unwrap();
         assert!(!repair.commands.is_empty() || !repair.manual_steps.is_empty());
+    }
+
+    #[test]
+    fn arc_install_recommendations_never_include_options() {
+        let fixes = available_fixes(&evidence()).unwrap();
+        let recommendations = fixes
+            .iter()
+            .flat_map(|fix| &fix.commands)
+            .filter(|command| {
+                command.program == "arc" && command.args.first().is_some_and(|arg| arg == "install")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!recommendations.is_empty());
+        assert!(
+            recommendations
+                .iter()
+                .all(|command| command.display() == "arc install")
+        );
     }
 }
